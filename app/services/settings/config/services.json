@@ -4,6 +4,7 @@
   "services/brokerage-adapter-dwx",
   "services/brokerage-adapter-j2t",
   "services/brokerage-adapter-optionstrat",
+  "services/brokerage-adapter-ibkr",
   "services/brokerage-adapter-simulated",
   "services/mcp",
   "services/dealTrackers",
