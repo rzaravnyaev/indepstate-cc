@@ -66,3 +66,4 @@
 - When adding service settings, update both default config and `*-settings-descriptor.json`, and register it through the settings service if it should appear in UI/config tools.
 - Add focused Node tests in `test/*.test.js` for new parsing, command, strategy, adapter-registry, settings, or execution behavior.
 - Before finishing code changes, run the smallest relevant test first; use `npm test` when behavior touches shared execution/order flow.
+- For GitHub releases, verify `dist/latest.yml` references asset filenames that exactly match the uploaded release assets before publishing; electron-updater depends on those names.
