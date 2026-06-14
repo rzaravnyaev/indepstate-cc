@@ -42,6 +42,9 @@
           "options": {
             "defaultType": "future"
           },
+          "protectiveOrders": {
+            "manualModificationStrategy": "adopt"
+          },
           "params": {
             "recvWindow": 5000
           },

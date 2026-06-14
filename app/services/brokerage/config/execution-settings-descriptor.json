@@ -59,6 +59,14 @@
           "description": "Exchange options",
           "defaultType": { "type": "string", "description": "Default market type" }
         },
+        "protectiveOrders": {
+          "description": "Protective SL/TP order safety settings",
+          "manualModificationStrategy": {
+            "type": "string",
+            "description": "How to handle externally moved tracked protective orders: adopt the broker price or stop managing that bracket",
+            "enum": ["adopt", "stop-managing"]
+          }
+        },
         "params": {
           "description": "Additional parameters",
           "recvWindow": { "type": "number", "description": "Receive window" }
