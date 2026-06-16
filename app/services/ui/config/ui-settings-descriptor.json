@@ -9,6 +9,14 @@
       "type": "number",
       "description": "Default window height"
     },
+    "x": {
+      "type": "number",
+      "description": "Fixed window X position"
+    },
+    "y": {
+      "type": "number",
+      "description": "Fixed window Y position"
+    },
     "autoscroll": {
       "type": "boolean",
       "description": "Scroll to newest orders automatically"

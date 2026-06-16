@@ -188,6 +188,79 @@ function loadSettingsSections() {
   });
 }
 
+function getSettingsInput(form, field) {
+  return form.querySelector(`input[data-field="${field}"]`);
+}
+
+function setSettingsInputValue(form, field, value) {
+  const input = getSettingsInput(form, field);
+  if (!input) return;
+  input.value = value == null ? '' : String(value);
+  form.dataset.dirty = '1';
+}
+
+function formatWindowState(state) {
+  const value = (key) => Number.isFinite(state?.[key]) ? String(Math.trunc(state[key])) : '-';
+  return `width ${value('width')} / height ${value('height')} / x ${value('x')} / y ${value('y')}`;
+}
+
+function appendUiWindowStateTools(form) {
+  const group = document.createElement('div');
+  group.className = 'settings-group settings-window-state';
+
+  const title = document.createElement('div');
+  title.className = 'settings-group-title';
+  title.textContent = 'Current window';
+  group.appendChild(title);
+
+  const current = document.createElement('div');
+  current.className = 'settings-window-state-current';
+  current.textContent = 'width - / height - / x - / y -';
+  group.appendChild(current);
+
+  const actions = document.createElement('div');
+  actions.className = 'settings-window-state-actions';
+
+  const refreshBtn = document.createElement('button');
+  refreshBtn.type = 'button';
+  refreshBtn.textContent = 'Refresh';
+  actions.appendChild(refreshBtn);
+
+  const applyBtn = document.createElement('button');
+  applyBtn.type = 'button';
+  applyBtn.textContent = 'Use current window';
+  actions.appendChild(applyBtn);
+
+  group.appendChild(actions);
+  form.insertBefore(group, form.firstChild);
+
+  let lastState = null;
+  const refresh = () => ipcRenderer.invoke('window:get-state')
+    .then((state = {}) => {
+      lastState = state;
+      current.textContent = formatWindowState(state);
+      return state;
+    })
+    .catch(() => null);
+
+  refreshBtn.addEventListener('click', refresh);
+  applyBtn.addEventListener('click', () => {
+    const apply = (state) => {
+      if (!state) return;
+      for (const field of ['width', 'height', 'x', 'y']) {
+        if (Number.isFinite(state[field])) setSettingsInputValue(form, field, Math.trunc(state[field]));
+      }
+    };
+    if (lastState) {
+      apply(lastState);
+      return;
+    }
+    refresh().then(apply);
+  });
+
+  refresh();
+}
+
 function showSection(name) {
   [...$settingsSections.querySelectorAll('div[data-section]')].forEach(d => {
     d.classList.toggle('active', d.dataset.section === name);
@@ -385,6 +458,7 @@ function showSection(name) {
       }
     };
     build(form, cfg, desc);
+    if (name === 'ui') appendUiWindowStateTools(form);
     settingsForms.set(name, form);
     $settingsFields.innerHTML = '';
     $settingsFields.appendChild(form);
@@ -2549,15 +2623,24 @@ function saveAndCloseSettingsPanel() {
       const data = {};
       for (const inp of form.querySelectorAll('input')) {
         const k = inp.dataset.field;
+        if (!k) continue;
         let val;
         if (inp.type === 'checkbox') val = inp.checked;
-        else if (inp.type === 'number') val = Number(inp.value);
+        else if (inp.type === 'number') val = inp.value === '' ? null : Number(inp.value);
         else val = inp.value;
         setNested(data, k, val);
       }
       ipcRenderer.invoke('settings:set', name, data).catch(() => {
       });
-      if (name === 'ui') state.autoscroll = !!data.autoscroll;
+      if (name === 'ui') {
+        state.autoscroll = !!data.autoscroll;
+        const windowState = {};
+        for (const field of ['width', 'height', 'x', 'y']) {
+          if (Number.isFinite(data[field])) windowState[field] = data[field];
+        }
+        ipcRenderer.invoke('window:set-state', windowState).catch(() => {
+        });
+      }
       if (name === 'optionstrat') {
         const ms = Number(data.valuationRefreshMs);
         if (Number.isFinite(ms) && ms > 0) optionStratValuationRefreshMs = ms;

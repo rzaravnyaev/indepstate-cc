@@ -1,6 +1,8 @@
 {
   "width": 1280,
   "height": 900,
+  "x": null,
+  "y": null,
   "autoscroll": true,
   "alwaysOnTop": false
 }

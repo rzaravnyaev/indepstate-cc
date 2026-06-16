@@ -283,6 +283,27 @@ function saveWindowStateNow() {
   writeWindowState(state);
 }
 
+function getWindowStateSnapshot() {
+  if (!mainWindow || mainWindow.isDestroyed()) return loadWindowState();
+  return {
+    ...mainWindow.getBounds(),
+    maximized: mainWindow.isMaximized()
+  };
+}
+
+function setWindowState(state = {}) {
+  if (!state || typeof state !== 'object') return getWindowStateSnapshot();
+  const current = getWindowStateSnapshot();
+  const next = {...current};
+  if (Number.isFinite(state.width) && state.width > 100) next.width = Math.trunc(state.width);
+  if (Number.isFinite(state.height) && state.height > 100) next.height = Math.trunc(state.height);
+  if (Number.isFinite(state.x)) next.x = Math.trunc(state.x);
+  if (Number.isFinite(state.y)) next.y = Math.trunc(state.y);
+  if (typeof state.maximized === 'boolean') next.maximized = state.maximized;
+  writeWindowState(next);
+  return next;
+}
+
 function scheduleWindowStateSave() {
   if (windowStateSaveTimer) clearTimeout(windowStateSaveTimer);
   windowStateSaveTimer = setTimeout(() => {
@@ -296,8 +317,8 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: savedState.width || uiCfg?.width || 1280,
     height: savedState.height || uiCfg?.height || 900,
-    x: Number.isFinite(savedState.x) ? savedState.x : undefined,
-    y: Number.isFinite(savedState.y) ? savedState.y : undefined,
+    x: Number.isFinite(savedState.x) ? savedState.x : Number.isFinite(uiCfg?.x) ? uiCfg.x : undefined,
+    y: Number.isFinite(savedState.y) ? savedState.y : Number.isFinite(uiCfg?.y) ? uiCfg.y : undefined,
     alwaysOnTop: uiCfg?.alwaysOnTop === true,
     webPreferences: {
       nodeIntegration: true,
@@ -316,6 +337,9 @@ function createWindow() {
   }
   // mainWindow.webContents.openDevTools();
 }
+
+ipcMain.handle('window:get-state', () => getWindowStateSnapshot());
+ipcMain.handle('window:set-state', (_evt, state) => setWindowState(state));
 
 app.whenReady().then(() => {
   ensureLogs({ truncateExecutionsOnStart: true });
