@@ -6,10 +6,9 @@ const { createStrategyFactory } = require('./factory');
 const servicesApi = require('../servicesApi');
 const tradeRules = require('../tradeRules');
 const orderCalc = servicesApi.orderCalculator || require('../orderCalculator');
-const loadConfig = require('../../config/load');
 const { resolveTickSize } = require('../points');
+const { resolveProvider: defaultResolveProvider } = require('../brokerage/providerResolver');
 
-const execCfg = loadConfig('../services/brokerage/config/execution.json');
 const userData = require('electron')?.app?.getPath('userData') || path.join(__dirname, '..', '..');
 const LOG_DIR = path.join(userData, 'logs');
 const EXEC_LOG = path.join(LOG_DIR, 'executions.jsonl');
@@ -20,11 +19,6 @@ function appendJsonl(file, obj) {
   try { fs.appendFileSync(file, JSON.stringify(obj) + '\n'); }
   catch (e) { console.error('appendJsonl error:', e); }
 }
-
-function pickProviderName(instrumentType) {
-  return execCfg.byInstrumentType?.[instrumentType] || execCfg.default || 'simulated';
-}
-
 
 const TF_SECONDS = {
   M1: 60,
@@ -84,7 +78,7 @@ async function fetchAdapterHistory(adapter, symbol, timeframe = 'M1', limit = 15
 }
 
 class PendingOrderHub {
-  constructor({ strategies = {}, strategyConfig, subscribe, ipcMain, queuePlaceOrder, wireAdapter, mainWindow, getAdapter } = {}) {
+  constructor({ strategies = {}, strategyConfig, subscribe, ipcMain, queuePlaceOrder, wireAdapter, mainWindow, getAdapter, resolveProvider } = {}) {
     this.subscribe = subscribe;
     this.createStrategy = createStrategyFactory(strategyConfig, strategies);
     this.services = new Map(); // key: provider:symbol -> service
@@ -97,6 +91,7 @@ class PendingOrderHub {
     this.wireAdapter = wireAdapter;
     this.mainWindow = mainWindow;
     this.getAdapter = getAdapter || servicesApi.brokerage?.getAdapter;
+    this.resolveProvider = resolveProvider || servicesApi.brokerage?.resolveProvider || defaultResolveProvider;
 
     events.on('bar', ({ provider, symbol, tf, open, high, low, close, time, timestamp }) => {
       if (tf !== 'M1') return;
@@ -138,7 +133,13 @@ class PendingOrderHub {
 
   queuePlacePending(payload) {
     const symbol = String(payload.ticker || payload.symbol || '');
-    const providerName = pickProviderName(payload.instrumentType);
+    const providerName = this.resolveProvider({
+      provider: payload.provider,
+      payload,
+      symbol,
+      instrumentType: payload.instrumentType,
+      meta: payload.meta
+    }).provider;
     const adapter = this.getAdapter(providerName);
     try { this.wireAdapter?.(adapter, providerName); } catch {}
 
@@ -232,6 +233,7 @@ class PendingOrderHub {
           side: payload.side === 'long' ? 'buy' : 'sell',
           type: 'limit',
           price: limitPrice,
+          provider: providerName,
           instrumentType: payload.instrumentType,
           tickSize: effectiveTickSize,
           qty,

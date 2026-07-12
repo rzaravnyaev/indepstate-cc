@@ -15,7 +15,7 @@ function loadExecutionConfigFromDisk() {
     return loadConfig('../services/brokerage/config/execution.json');
   } catch (e) {
     console.error('[adapterRegistry] cannot read execution.json:', e.message);
-    return { providers:{}, byInstrumentType:{}, default:'simulated' };
+    return { providers:{}, byInstrumentType:{}, bySymbol:{}, default:'simulated' };
   }
 }
 

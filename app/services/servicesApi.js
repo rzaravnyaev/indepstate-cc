@@ -3,6 +3,8 @@
  * @property {(name: string) => any} getAdapter
  * @property {() => any} getExecutionConfig
  * @property {(name: string) => any} getProviderConfig
+ * @property {(context: any) => { provider: string, source: string, matchedKey?: string }} resolveProvider
+ * @property {(context: any) => { provider: string, adapter: any, source: string, matchedKey?: string }} resolveAdapter
  */
 
 /**

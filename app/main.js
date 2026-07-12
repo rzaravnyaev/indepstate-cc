@@ -18,7 +18,6 @@ const loadConfig = require('./config/load');
 const orderCalc = servicesApi.orderCalculator || require('./services/orderCalculator');
 const { resolveTickSize } = require('./services/points');
 const { calculateLimitBidTradePlan } = require('./services/levelOrder/strategy');
-const execCfg = loadConfig('../services/brokerage/config/execution.json');
 const orderCardsCfg = loadConfig('../services/orderCards/config/order-cards.json');
 const uiCfg = loadConfig('../services/ui/config/ui.json');
 
@@ -43,7 +42,7 @@ function loadServices(servicesApi = {}) {
 }
 
 loadServices(servicesApi);
-const { getAdapter, getProviderConfig } = servicesApi.brokerage || {};
+const { getAdapter, resolveProvider } = servicesApi.brokerage || {};
 
 function envBool(name, fallback = false) {
   const v = process.env[name];
@@ -489,8 +488,8 @@ app.whenReady().then(() => {
       nowTs,
       onRow(row) {
         const ticker = row.ticker || row.symbol;
-        const instrumentType = detectInstrumentType(String(ticker || ''));
-        row.provider = pickProviderName(instrumentType);
+        const instrumentType = row.instrumentType || detectInstrumentType(String(ticker || ''));
+        row.provider = resolveProviderName({ row, symbol: ticker, instrumentType });
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('orders:new', row);
         }
@@ -511,8 +510,8 @@ app.whenReady().then(() => {
       const combined = lists.flat().sort((a, b) => (b.time || 0) - (a.time || 0));
       return combined.map((row) => {
         const ticker = row.ticker || row.symbol;
-        const instrumentType = detectInstrumentType(String(ticker || ''));
-        return { ...row, provider: row.provider || pickProviderName(instrumentType) };
+        const instrumentType = row.instrumentType || detectInstrumentType(String(ticker || ''));
+        return { ...row, provider: resolveProviderName({ row, symbol: ticker, instrumentType }) };
       });
     }
   };
@@ -635,12 +634,21 @@ function providerCanResolveRiskQty(providerName, adapter) {
   return p.includes('binance') || ['binance', 'binanceusdm', 'binance-futures', 'binancefutures'].includes(id);
 }
 
-function pickProviderName(instrumentType) {
-  return execCfg.byInstrumentType?.[instrumentType] || execCfg.default || 'simulated';
+function resolveProviderName(context = {}) {
+  if (typeof resolveProvider === 'function') {
+    return resolveProvider(context).provider;
+  }
+  const explicit = context.provider || context.payload?.provider || context.row?.provider || context.meta?.provider;
+  return String(explicit || 'simulated').trim().toLowerCase();
 }
 
-function pickOrderProviderName(order) {
-  return order?.provider || order?.meta?.provider || pickProviderName(order?.instrumentType);
+function resolveOrderProviderName(order) {
+  return resolveProviderName({
+    payload: order,
+    symbol: order?.symbol || order?.ticker,
+    instrumentType: order?.instrumentType,
+    meta: order?.meta
+  });
 }
 
 // --- EQ normalization: BL/BSL/SL/SSL -> buy/sell + limit/stoplimit (для адаптеров типа J2T)
@@ -765,7 +773,7 @@ function setupIpc(orderSvc) {
     }
 
     // выбор адаптера, requestId и нормализация под исполнение
-    const providerName = pickOrderProviderName(order);
+    const providerName = resolveOrderProviderName(order);
     let execOrder;
     let cid = '';
     try {
@@ -980,7 +988,7 @@ function setupIpc(orderSvc) {
   ipcMain.handle('level-order:place', async (_evt, payload = {}) => {
     const symbol = String(payload.ticker || payload.symbol || '').trim();
     const instrumentType = payload.instrumentType || detectInstrumentType(symbol);
-    const providerName = payload.provider || pickProviderName(instrumentType);
+    const providerName = resolveProviderName({ payload, symbol, instrumentType, meta: payload.meta });
     const strategyId = payload.strategyId || generateCid();
     const requestId = payload.requestId || `${nowTs()}_${Math.random().toString(36).slice(2,8)}`;
 
@@ -1133,7 +1141,7 @@ function setupIpc(orderSvc) {
       instrumentType: 'OPT',
       provider: payload.provider || payload.meta?.provider || 'optionstrat'
     });
-    const providerName = pickOrderProviderName(order);
+    const providerName = resolveOrderProviderName(order);
     try {
       const adapter = getAdapter(providerName);
       wireAdapter(adapter, providerName);
@@ -1168,7 +1176,7 @@ function setupIpc(orderSvc) {
       const symbol = typeof arg === 'object' ? arg.symbol : arg;
       const provider = typeof arg === 'object' ? arg.provider : undefined;
       const instrumentType = detectInstrumentType(String(symbol || ''));
-      const providerName = provider || pickProviderName(instrumentType);
+      const providerName = resolveProviderName({ provider, payload: typeof arg === 'object' ? arg : {}, symbol, instrumentType });
       const adapter = getAdapter(providerName);
       const q = await adapter.getQuote?.(String(symbol || ''));
       return q || null;
@@ -1182,7 +1190,7 @@ function setupIpc(orderSvc) {
       const symbol = typeof arg === 'object' ? arg.symbol : arg;
       const provider = typeof arg === 'object' ? arg.provider : undefined;
       const instrumentType = detectInstrumentType(String(symbol || ''));
-      const providerName = provider || pickProviderName(instrumentType);
+      const providerName = resolveProviderName({ provider, payload: typeof arg === 'object' ? arg : {}, symbol, instrumentType });
       const adapter = getAdapter(providerName);
       await adapter.forgetQuote?.(String(symbol || ''));
       return true;

@@ -2506,6 +2506,7 @@ async function place(kind, row, v, instrumentType, btnLabel) {
     if (isPendingExec) {
       const pendPayload = {
         ticker: row.ticker,
+        provider: row.provider,
         event: row.event,
         price: Number(priceVal),
         side: isLong ? 'long' : 'short',

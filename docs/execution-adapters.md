@@ -6,6 +6,9 @@ Copy this file to the `config` directory under the application's user data path 
 Each provider entry selects an adapter implementation and its settings.
 Use `getAdapter(name)` to obtain a ready-to-use instance and `getProviderConfig(name)` to read raw configuration.
 
+Provider routing is resolved centrally in priority order: explicit `provider`, `bySymbol`, `byInstrumentType`, then `default`.
+Use `bySymbol` for exact symbol-to-provider overrides, for example `"bySymbol": { "AAPL": "j2t" }`.
+
 ## Optional data methods
 
 Adapters may expose read-only data methods in addition to execution methods. MCP data tools call these through the adapter layer instead of reaching into provider-specific clients directly.

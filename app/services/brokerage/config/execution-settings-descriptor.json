@@ -13,6 +13,10 @@
       "CFD": { "type": "string", "description": "Provider for CFD instruments" },
       "OPT": { "type": "string", "description": "Provider for option block instruments" }
     },
+    "bySymbol": {
+      "description": "Execution provider per symbol",
+      "__allowUnknown": true
+    },
     "providers": {
       "description": "Provider configurations",
       "__allowUnknown": true,
