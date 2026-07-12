@@ -28,6 +28,36 @@ const orderCalculator = {
   assert.strictEqual(buildLevelOrderRow(['SPX']).ok, false);
 })();
 
+(function testCommandProps() {
+  let row;
+  const cmd = new LevelOrderCommand({ now: () => 123, onAdd: r => { row = r; } });
+  let res = cmd.run(['spx.cfd', '7500', 'props=producingLineId:foo']);
+  assert.strictEqual(res.ok, true);
+  assert.strictEqual(row.producingLineId, 'foo');
+
+  res = cmd.run(['spx.cfd', '7500', 'props=producingLineId:foo;source:tv;note:line']);
+  assert.strictEqual(res.ok, true);
+  assert.strictEqual(row.producingLineId, 'foo');
+  assert.strictEqual(row.source, 'tv');
+  assert.strictEqual(row.note, 'line');
+
+  res = cmd.run(['spx.cfd', '7500', 'props=ticker:BAD;level:1;event:bad;time:999;cardType:bad;producingLineId:foo']);
+  assert.strictEqual(res.ok, true);
+  assert.deepStrictEqual(row, {
+    cardType: 'levelOrder',
+    ticker: 'SPX.cfd',
+    level: 7500,
+    event: 'levelOrder',
+    time: 123,
+    producingLineId: 'foo'
+  });
+
+  assert.strictEqual(buildLevelOrderRow(['SPX', '7500', 'props=bad']).ok, false);
+  assert.strictEqual(buildLevelOrderRow(['SPX', '7500', 'props=bad:']).ok, false);
+  assert.strictEqual(buildLevelOrderRow(['SPX', '7500', 'props=bad-key:value']).ok, false);
+  assert.strictEqual(buildLevelOrderRow(['SPX', '7500', 'extra']).ok, false);
+})();
+
 (function testDefaults() {
   const cfg = {
     defaults: { riskUsd: 50, maxLot: 0, stopOffsetPts: 10, takeProfitPts: null },

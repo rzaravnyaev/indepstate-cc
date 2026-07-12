@@ -19,7 +19,7 @@ with a `name` exposes a checkbox that enables or disables the action at runtime.
       "bindings": [
         {
           "event": "tv-tool-horzline",
-          "action": "commandLine:add {symbol} {price}"
+          "action": "commandLine:lo stripSymbol({symbol}) {price} props=producingLineId:{lineId}"
         },
         {
           "event": "tv-tool-horzline-remove",
@@ -50,6 +50,36 @@ Objects are stringified and missing values resolve to empty strings.
 
 The configuration order determines the toggle order in the UI. Removing an action from the config also
 removes its toggle on the next reload.
+
+## Function expressions
+
+Command templates can call small registered helper functions:
+
+```json
+{
+  "event": "tv-tool-horzline",
+  "action": "commandLine:lo stripSymbol({symbol}) {price} props=producingLineId:{lineId}"
+}
+```
+
+Function arguments are resolved from payload placeholders before invocation. The built-in
+`stripSymbol(value)` helper trims a TradingView-style symbol and removes the exchange prefix before
+`:`, so `NYSE:AAA` becomes `AAA`; symbols without a prefix pass through unchanged.
+
+The expression layer is intentionally small: it supports direct calls such as
+`functionName({field})` or `functionName({a}, {b})`. It does not execute JavaScript and does not
+support nested function calls. Unknown functions render as an empty string and are reported through
+the actions bus error handler without stopping other actions.
+
+Services can extend the registry during `initService`:
+
+```js
+servicesApi.actionBus.registerActionFunction('myHelper', (value, payload, entry) => {
+  return String(value || '').trim();
+});
+```
+
+The registration call returns a disposer, and `unregisterActionFunction(name)` is also available.
 
 ## Command runners
 

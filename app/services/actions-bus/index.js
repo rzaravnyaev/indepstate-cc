@@ -1,6 +1,21 @@
 const { EventEmitter } = require('events');
 
 const DEFAULT_RUNNER_KEY = '__default__';
+const ACTION_FUNCTION_PATTERN = /\b([A-Za-z_][A-Za-z0-9_]*)\(([^()]*)\)/g;
+
+function formatActionValue(value) {
+  if (value == null) return '';
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
+}
+
+function stripSymbol(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  const colonIndex = raw.indexOf(':');
+  return colonIndex >= 0 ? raw.slice(colonIndex + 1).trim() : raw;
+}
 
 function createActionsBus(opts = {}) {
   const emitter = new EventEmitter();
@@ -9,11 +24,14 @@ function createActionsBus(opts = {}) {
   const configHandlers = new Map(); // event -> handler
   const pending = new Map(); // runnerKey -> [ { entry, payload } ]
   const commandRunners = new Map(); // runnerKey -> fn
+  const actionFunctions = new Map();
 
   if (typeof opts.commandRunner === 'function') {
     commandRunners.set(DEFAULT_RUNNER_KEY, opts.commandRunner);
   }
   const onError = typeof opts.onError === 'function' ? opts.onError : null;
+
+  registerActionFunction('stripSymbol', stripSymbol);
 
   function getRunnerKey(name) {
     return typeof name === 'string' && name.trim()
@@ -112,21 +130,68 @@ function createActionsBus(opts = {}) {
     };
   }
 
-  function resolveCommand(template, payload) {
+  function normalizeActionFunctionName(name) {
+    if (typeof name !== 'string') return null;
+    const trimmed = name.trim();
+    return /^[A-Za-z_][A-Za-z0-9_]*$/.test(trimmed) ? trimmed : null;
+  }
+
+  function registerActionFunction(name, fn) {
+    const key = normalizeActionFunctionName(name);
+    if (!key || typeof fn !== 'function') return null;
+    actionFunctions.set(key, fn);
+    return () => {
+      if (actionFunctions.get(key) === fn) {
+        actionFunctions.delete(key);
+      }
+    };
+  }
+
+  function unregisterActionFunction(name) {
+    const key = normalizeActionFunctionName(name);
+    if (!key) return false;
+    return actionFunctions.delete(key);
+  }
+
+  function listActionFunctions() {
+    return Array.from(actionFunctions.keys()).sort();
+  }
+
+  function resolvePlaceholders(template, payload) {
     if (typeof template !== 'string') return '';
     if (!payload || typeof payload !== 'object') return template;
     return template.replace(/\{([^{}\s]+)\}/g, (match, key) => {
       const value = payload[key];
-      if (value == null) return '';
-      if (typeof value === 'number' && Number.isFinite(value)) return String(value);
-      if (typeof value === 'object') return JSON.stringify(value);
-      return String(value);
+      return formatActionValue(value);
     });
+  }
+
+  function parseFunctionArgs(rawArgs, payload) {
+    if (typeof rawArgs !== 'string' || rawArgs.trim() === '') return [];
+    return rawArgs.split(',').map((arg) => resolvePlaceholders(arg.trim(), payload));
+  }
+
+  function resolveCommand(template, payload, entry) {
+    if (typeof template !== 'string') return '';
+    const expandedFunctions = template.replace(ACTION_FUNCTION_PATTERN, (match, fnName, rawArgs) => {
+      const fn = actionFunctions.get(fnName);
+      if (typeof fn !== 'function') {
+        if (onError) onError(new Error(`Unknown action function: ${fnName}`), entry, payload);
+        return '';
+      }
+      try {
+        return formatActionValue(fn(...parseFunctionArgs(rawArgs, payload), payload, entry));
+      } catch (err) {
+        if (onError) onError(err, entry, payload);
+        return '';
+      }
+    });
+    return resolvePlaceholders(expandedFunctions, payload);
   }
 
   function executeAction(entry, payload) {
     const template = entry.commandTemplate || entry.command || '';
-    const cmd = resolveCommand(template, payload);
+    const cmd = resolveCommand(template, payload, entry);
     if (!cmd) return;
     const runnerKey = entry.runnerKey || DEFAULT_RUNNER_KEY;
     let runner = commandRunners.get(runnerKey);
@@ -287,8 +352,11 @@ function createActionsBus(opts = {}) {
     setActionEnabled,
     getActionState,
     setCommandRunner,
-    registerCommandRunner
+    registerCommandRunner,
+    registerActionFunction,
+    unregisterActionFunction,
+    listActionFunctions
   };
 }
 
-module.exports = { createActionsBus };
+module.exports = { createActionsBus, stripSymbol };

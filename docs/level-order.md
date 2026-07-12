@@ -7,17 +7,24 @@ Level Order creates custom "trade from level" cards and executes them through th
 ```text
 levelOrder {ticker} {level}
 lo {ticker} {level}
+lo {ticker} {level} props=key:value;key2:value2
 ```
 
 The command creates a row with `cardType: "levelOrder"`, the normalized ticker, the level, `event: "levelOrder"`, and the current timestamp.
 
 Ticker normalization follows the existing command style: the base ticker is uppercased, while suffixes such as `.cfd` are preserved.
 
+The optional `props=` argument attaches custom string properties to the created card row. It accepts
+semicolon-delimited `key:value` pairs without spaces. Core row fields such as `ticker`, `level`,
+`event`, `time`, and `cardType` are preserved and cannot be overwritten by props. This is useful for
+automation metadata such as `producingLineId`.
+
 Examples:
 
 ```text
 levelOrder ADAUSDT.cfd 0.164
 lo ES.cfd 6500
+lo ES.cfd 6500 props=producingLineId:tv-line-123
 ```
 
 ## Settings

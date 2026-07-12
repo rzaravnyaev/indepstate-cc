@@ -32,6 +32,19 @@ The payload matches the last activity used by the `last` command: `{ symbol, pri
 TradingView provides a persistent identifier, the payload includes `lineId` so downstream automation
 can correlate follow-up events.
 
+To create a Level Order card from a new horizontal line, bind the event through the actions bus:
+
+```json
+{
+  "event": "tv-tool-horzline",
+  "action": "commandLine:lo stripSymbol({symbol}) {price} props=producingLineId:{lineId}"
+}
+```
+
+`stripSymbol({symbol})` removes the TradingView exchange prefix, matching the ticker cleanup used by
+the `last` command, `{price}` is the horizontal line level, and `props=producingLineId:{lineId}`
+keeps the card linked to the TradingView object for later removal.
+
 When TradingView deletes a horizontal line, `tvListener` emits `tv-tool-horzline-remove` with the
 payload `{ lineId }`. Binding that event to `commandLine:rm producingLineId:{lineId}` removes the card
 that originated from the deleted line, keeping the UI in sync with TradingView.

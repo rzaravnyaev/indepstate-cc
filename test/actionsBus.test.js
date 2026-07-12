@@ -3,7 +3,13 @@ const { createActionsBus } = require('../app/services/actions-bus');
 
 function run() {
   const executed = [];
-  const bus = createActionsBus();
+  const errors = [];
+  const bus = createActionsBus({
+    onError(err) {
+      errors.push(err.message);
+    }
+  });
+  bus.registerActionFunction('joinSymbolLevel', (symbol, price) => `${symbol}@${price}`);
 
   bus.configure([
     {
@@ -11,7 +17,11 @@ function run() {
       label: 'Foo toggle',
       bindings: [
         { event: 'foo', action: 'commandLine:test {symbol}' },
-        { event: 'bar', action: 'commandLine:bar {symbol}' }
+        { event: 'bar', action: 'commandLine:bar {symbol}' },
+        { event: 'tv', action: 'commandLine:lo stripSymbol({symbol}) {price} props=producingLineId:{lineId}' },
+        { event: 'plain', action: 'commandLine:plain stripSymbol({symbol})' },
+        { event: 'custom', action: 'commandLine:custom joinSymbolLevel({symbol}, {price})' },
+        { event: 'unknown-fn', action: 'commandLine:unknown missingFn({symbol}) keep-going' }
       ]
     },
     { event: 'foo', action: 'other:always-run' },
@@ -23,7 +33,13 @@ function run() {
 
   bus.emit('foo', { symbol: 'AAA' });
   bus.emit('bar', { symbol: 'AAA' });
+  bus.emit('tv', { symbol: 'NYSE:AAA', price: 1.23, lineId: 'foo' });
+  bus.emit('plain', { symbol: 'ES.cfd' });
+  bus.emit('custom', { symbol: 'AAA', price: 1.23 });
+  bus.emit('unknown-fn', { symbol: 'AAA' });
   assert.deepStrictEqual(executed, []);
+  assert.deepStrictEqual(errors, ['Unknown action function: missingFn']);
+  errors.length = 0;
 
   const commandLineRunner = (cmd) => {
     executed.push(`cli:${cmd}`);
@@ -41,15 +57,25 @@ function run() {
   assert.deepStrictEqual(executed, [
     'cli:test AAA',
     'cli:bar AAA',
+    'cli:lo AAA 1.23 props=producingLineId:foo',
+    'cli:plain ES.cfd',
+    'cli:custom AAA@1.23',
+    'cli:unknown  keep-going',
     'cli:no-prefix-run',
     'other:always-run'
   ]);
+  assert.deepStrictEqual(errors, ['Unknown action function: missingFn']);
+  errors.length = 0;
 
   bus.emit('foo', { symbol: 'AAA' });
   bus.emit('bar', { symbol: 'AAA' });
   assert.deepStrictEqual(executed, [
     'cli:test AAA',
     'cli:bar AAA',
+    'cli:lo AAA 1.23 props=producingLineId:foo',
+    'cli:plain ES.cfd',
+    'cli:custom AAA@1.23',
+    'cli:unknown  keep-going',
     'cli:no-prefix-run',
     'other:always-run',
     'cli:test AAA',
@@ -65,6 +91,10 @@ function run() {
   assert.deepStrictEqual(executed, [
     'cli:test AAA',
     'cli:bar AAA',
+    'cli:lo AAA 1.23 props=producingLineId:foo',
+    'cli:plain ES.cfd',
+    'cli:custom AAA@1.23',
+    'cli:unknown  keep-going',
     'cli:no-prefix-run',
     'other:always-run',
     'cli:test AAA',
@@ -86,6 +116,10 @@ function run() {
   named = bus.listNamedActions();
   assert.deepStrictEqual(named, [{ name: 'Second', label: 'Second', enabled: true }]);
   assert.strictEqual(bus.getActionState('Foo action'), undefined);
+  assert.ok(bus.listActionFunctions().includes('stripSymbol'));
+  assert.ok(bus.listActionFunctions().includes('joinSymbolLevel'));
+  assert.strictEqual(bus.unregisterActionFunction('joinSymbolLevel'), true);
+  assert.ok(!bus.listActionFunctions().includes('joinSymbolLevel'));
 
   console.log('actionsBus tests passed');
 }
