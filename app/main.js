@@ -18,6 +18,7 @@ const loadConfig = require('./config/load');
 const orderCalc = servicesApi.orderCalculator || require('./services/orderCalculator');
 const { resolveTickSize } = require('./services/points');
 const { calculateLimitBidTradePlan } = require('./services/levelOrder/strategy');
+const { collectRetryStopEntries, getRetryStopParentIds } = require('./services/levelOrder/retryStop');
 const orderCardsCfg = loadConfig('../services/orderCards/config/order-cards.json');
 const uiCfg = loadConfig('../services/ui/config/ui.json');
 
@@ -1092,17 +1093,37 @@ function setupIpc(orderSvc) {
   });
 
   ipcMain.handle('execution:stop-retry', async (_evt, reqId) => {
-    for (const [pendingId, rec] of pendingIndex.entries()) {
-      if (rec.reqId === reqId) {
-        rec.adapter?.stopOpenOrder?.(pendingId);
-        pendingIndex.delete(pendingId);
-        trackerPending.delete(reqId);
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('execution:retry-stopped', { reqId, pendingId });
-        }
-        break;
+    const matches = collectRetryStopEntries(pendingIndex, reqId);
+    const parentIds = getRetryStopParentIds(reqId, matches);
+
+    for (const parentId of parentIds) {
+      stopLevelOrderPositionMonitor(parentId);
+    }
+
+    for (const { pendingId, rec } of matches) {
+      rec.adapter?.stopOpenOrder?.(pendingId);
+      pendingIndex.delete(pendingId);
+      trackerPending.delete(rec.reqId);
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('execution:retry-stopped', {
+          reqId: rec.reqId,
+          pendingId,
+          parentRequestId: rec.order?.meta?.parentRequestId
+        });
       }
     }
+
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      for (const parentId of parentIds) {
+        mainWindow.webContents.send('execution:retry-stopped', {
+          reqId: parentId,
+          parentRequestId: parentId,
+          stopped: matches.length
+        });
+      }
+    }
+
+    return { status: 'ok', stopped: matches.length };
   });
 
   ipcMain.handle('execution:cancel-order', async (_evt, payload = {}) => {

@@ -891,6 +891,23 @@ function setCardState(key, state) {
       status.title = 'Отменить pe';
       status.onclick = () => {
         const reqId = card.dataset.reqId;
+        const currentRow = appState.rows.find(r => rowKey(r) === key);
+        if (currentRow?.cardType === 'levelOrder') {
+          if (reqId) ipcRenderer.invoke('execution:stop-retry', reqId).catch(() => {});
+          if (reqId) {
+            pendingByReqId.delete(reqId);
+            pendingIdByReqId.delete(reqId);
+            retryCounts.delete(reqId);
+            clearLevelOrderGroup(reqId);
+            delete card.dataset.reqId;
+          } else {
+            clearLevelOrderByKey(key);
+          }
+          delete card.dataset.pendingId;
+          setCardState(key, null);
+          render();
+          return;
+        }
         const pendingId = card.dataset.pendingId || (reqId ? pendingIdByReqId.get(reqId) : null);
         if (pendingId) ipcRenderer.invoke('pending:cancel', pendingId).catch(() => {
         });
@@ -2433,6 +2450,29 @@ function levelOrderAllClosed(group) {
   return total > 0 && group.closedTickets.size >= total;
 }
 
+function clearLevelOrderGroup(parentReqId) {
+  const group = levelOrderGroups.get(parentReqId);
+  levelOrderGroups.delete(parentReqId);
+  if (group) {
+    for (const childReqId of group.childReqIds) {
+      levelOrderChildToGroup.delete(childReqId);
+      pendingByReqId.delete(childReqId);
+      pendingIdByReqId.delete(childReqId);
+      retryCounts.delete(childReqId);
+    }
+    for (const ticket of group.tickets) levelOrderTicketToGroup.delete(ticket);
+  }
+  for (const [pendingId, parent] of levelOrderPendingToGroup.entries()) {
+    if (parent === parentReqId) levelOrderPendingToGroup.delete(pendingId);
+  }
+}
+
+function clearLevelOrderByKey(key) {
+  for (const [parentReqId, group] of Array.from(levelOrderGroups.entries())) {
+    if (group.key === key) clearLevelOrderGroup(parentReqId);
+  }
+}
+
 // ======= Order placement (shared) =======
 const PENDING_ACTIONS = {
   BC: {strategy: 'consolidation', side: 'long'},
@@ -2758,7 +2798,7 @@ ipcRenderer.on('execution:pending', (_evt, rec) => {
     if (card) delete card.dataset.pendingId;
   }
   if (card) {
-    card.dataset.reqId = reqId;
+    card.dataset.reqId = levelGroup ? levelGroup.parentRequestId : reqId;
     const rb = card.querySelector('.retry-btn');
     if (rb) rb.textContent = '0';
   }
@@ -2793,7 +2833,9 @@ ipcRenderer.on('execution:pending', (_evt, rec) => {
 });
 
 ipcRenderer.on('execution:retry', (_evt, rec) => {
-  const key = pendingByReqId.get(rec.reqId);
+  let key = pendingByReqId.get(rec.reqId);
+  const levelGroup = findLevelOrderGroupByReqId(rec.reqId) || findLevelOrderGroupByPendingId(rec.pendingId);
+  if (levelGroup) key = levelGroup.key;
   if (!key) return;
   retryCounts.set(rec.reqId, rec.count);
   const card = cardByKey(key);
@@ -2804,8 +2846,32 @@ ipcRenderer.on('execution:retry', (_evt, rec) => {
 });
 
 ipcRenderer.on('execution:retry-stopped', (_evt, rec) => {
-  const key = pendingByReqId.get(rec.reqId);
+  const levelGroup = findLevelOrderGroupByReqId(rec.reqId)
+    || findLevelOrderGroupByPendingId(rec.pendingId)
+    || levelOrderGroups.get(rec.parentRequestId || rec.reqId);
+  let key = pendingByReqId.get(rec.reqId);
+  if (levelGroup) key = levelGroup.key;
   if (!key) return;
+  if (levelGroup) {
+    const parentReqId = levelGroup.parentRequestId;
+    clearLevelOrderGroup(parentReqId);
+    pendingByReqId.delete(parentReqId);
+    pendingIdByReqId.delete(parentReqId);
+    retryCounts.delete(parentReqId);
+    const card = cardByKey(key);
+    if (card) {
+      delete card.dataset.reqId;
+      delete card.dataset.pendingId;
+      const rb = card.querySelector('.retry-btn');
+      if (rb) {
+        rb.textContent = '0';
+        rb.style.display = 'none';
+      }
+    }
+    setCardState(key, null);
+    render();
+    return;
+  }
   pendingByReqId.delete(rec.reqId);
   retryCounts.delete(rec.reqId);
   const card = cardByKey(key);
@@ -3219,6 +3285,7 @@ if (typeof module !== 'undefined') {
     levelOrderChildToGroup,
     levelOrderPendingToGroup,
     levelOrderTicketToGroup,
+    clearLevelOrderGroup,
     retryCounts,
     cardStates,
     pendingExecLabels,

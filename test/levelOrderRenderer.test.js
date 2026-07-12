@@ -173,6 +173,46 @@ async function run() {
   });
   assert.strictEqual(t.cardStates.get(key), 'executing');
 
+  const row2 = { cardType: 'levelOrder', ticker: 'TST2', event: 'levelOrder', time: 1, level: 100, provider: 'simulated', instrumentType: 'EQ' };
+  t.instrumentInfo.set('TST2', { bid: 101, ask: 102, price: 101.5, tickSize: 0.5 });
+  handlers['orders:new'](null, row2);
+  const key2 = t.rowKey(row2);
+  let card2 = t.cardByKey(key2);
+  card2.querySelector('button.btn[data-kind="LB"]').click();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  const call2 = calls.filter(c => c.ch === 'level-order:place').at(-1);
+  const parentRequestId2 = call2.payload.requestId;
+  handlers['execution:pending'](null, {
+    reqId: `${parentRequestId2}_1`,
+    pendingId: 'cid-3',
+    order: {
+      symbol: 'TST2',
+      side: 'buy',
+      qty: 1,
+      meta: { requestId: `${parentRequestId2}_1`, parentRequestId: parentRequestId2, childCount: 2 }
+    }
+  });
+  handlers['execution:pending'](null, {
+    reqId: `${parentRequestId2}_2`,
+    pendingId: 'cid-4',
+    order: {
+      symbol: 'TST2',
+      side: 'buy',
+      qty: 2,
+      meta: { requestId: `${parentRequestId2}_2`, parentRequestId: parentRequestId2, childCount: 2 }
+    }
+  });
+  handlers['execution:retry'](null, { reqId: `${parentRequestId2}_1`, pendingId: 'cid-3', count: 2 });
+  assert.strictEqual(t.retryCounts.get(`${parentRequestId2}_1`), 2);
+  card2 = t.cardByKey(key2);
+  assert.strictEqual(card2.dataset.reqId, parentRequestId2);
+  card2.querySelector('.card__status').click();
+  assert(calls.find(c => c.ch === 'execution:stop-retry' && c.payload === parentRequestId2));
+  assert.strictEqual(t.cardStates.get(key2), undefined);
+  assert.strictEqual(t.levelOrderGroups.has(parentRequestId2), false);
+  assert.strictEqual(t.levelOrderChildToGroup.has(`${parentRequestId2}_1`), false);
+  assert.strictEqual(t.levelOrderPendingToGroup.has('cid-3'), false);
+
   Module._load = originalLoad;
   console.log('levelOrderRenderer tests passed');
 }
