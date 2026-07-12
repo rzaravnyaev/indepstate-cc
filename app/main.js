@@ -17,6 +17,7 @@ const tradeRules = servicesApi.tradeRules || require('./services/tradeRules');
 const loadConfig = require('./config/load');
 const orderCalc = servicesApi.orderCalculator || require('./services/orderCalculator');
 const { resolveTickSize } = require('./services/points');
+const { calculateLimitBidTradePlan } = require('./services/levelOrder/strategy');
 const execCfg = loadConfig('../services/brokerage/config/execution.json');
 const orderCardsCfg = loadConfig('../services/orderCards/config/order-cards.json');
 const uiCfg = loadConfig('../services/ui/config/ui.json');
@@ -112,6 +113,114 @@ function ensureOrderCid(order) {
   order.comment = ensureCommentHasCid(order.comment, cid);
   return cid;
 }
+
+function getTerminalPositionComment(position = {}) {
+  return String(position.comment || position.comment_string || position.clientOrderId || position.id || position.ticket || '');
+}
+
+function isTerminalPendingOrder(position = {}) {
+  if (position.__isPosition === true) return false;
+  const type = String(position.type || position.order_type || position.cmd || '').toLowerCase();
+  return type.includes('limit') || type.includes('stop') || type.includes('pending');
+}
+
+function terminalPositionQty(position = {}) {
+  const candidates = [
+    position.lots,
+    position.volume,
+    position.qty,
+    position.size,
+    position.contracts,
+    position.volume_current
+  ];
+  for (const candidate of candidates) {
+    const value = Math.abs(Number(candidate));
+    if (Number.isFinite(value) && value > 0) return value;
+  }
+  return 0;
+}
+
+function getTerminalPositionIdentifiers(position = {}) {
+  const values = [
+    position.ticket,
+    position.order,
+    position.order_id,
+    position.orderId,
+    position.position_id,
+    position.positionId,
+    position.id,
+    position.comment,
+    position.comment_string,
+    position.clientOrderId
+  ];
+  const ids = new Set();
+  for (const value of values) {
+    const text = String(value ?? '').trim();
+    if (!text) continue;
+    ids.add(text);
+    const cid = normalizeCid(text);
+    if (cid) ids.add(cid);
+  }
+  return ids;
+}
+
+function levelOrderChildCid(child = {}) {
+  const raw = child.result?.providerOrderId || child.result?.cid || child.result?.raw?.cid || '';
+  return normalizeCid(raw);
+}
+
+function levelOrderChildExpectedIds(child = {}) {
+  const ids = new Set();
+  const cid = levelOrderChildCid(child);
+  if (cid) ids.add(cid);
+  const ticket = String(child.providerOrderId || child.ticket || child.result?.ticket || '').trim();
+  if (ticket) ids.add(ticket);
+  return ids;
+}
+
+function normalizeSymbolForMatch(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
+function scanLevelOrderPositions(openOrders, children, symbol) {
+  const expected = [];
+  const expectedIds = new Set();
+  for (const child of children || []) {
+    const ids = levelOrderChildExpectedIds(child);
+    const qty = Number(child.qty);
+    if (ids.size && Number.isFinite(qty) && qty > 0) {
+      expected.push({ ids, qty });
+      for (const id of ids) expectedIds.add(id);
+    }
+  }
+  const targetSymbol = normalizeSymbolForMatch(symbol);
+  const matchedPositions = [];
+  const foundIds = new Set();
+  for (const pos of openOrders || []) {
+    if (!pos || isTerminalPendingOrder(pos)) continue;
+    if (targetSymbol && normalizeSymbolForMatch(pos.symbol) !== targetSymbol) continue;
+    const posIds = getTerminalPositionIdentifiers(pos);
+    const qty = terminalPositionQty(pos);
+    const matchedIds = [...expectedIds].filter(id => posIds.has(id));
+    if (!matchedIds.length) continue;
+    matchedPositions.push(pos);
+    for (const id of matchedIds) foundIds.add(id);
+  }
+  let expectedQty = 0;
+  for (const exp of expected) expectedQty += exp.qty;
+  let foundQty = 0;
+  for (const pos of matchedPositions) foundQty += terminalPositionQty(pos);
+  const anyCidFound = expectedIds.size > 0 && foundIds.size > 0;
+  const qtyOk = expectedQty > 0 && foundQty + 1e-9 >= expectedQty;
+  return {
+    ready: anyCidFound && qtyOk,
+    expectedQty,
+    foundQty,
+    expectedCids: expected.flatMap(exp => [...exp.ids]),
+    foundCids: [...foundIds],
+    matchedPositions: matchedPositions.length
+  };
+}
 // ----------------- CONSTS -----------------
 const PORT = envInt("TV_WEBHOOK_PORT", 3210);
 const IS_ELECTRON_MENU_ENABLED = envBool("IS_ELECTRON_MENU_ENABLED", false);
@@ -136,8 +245,11 @@ function ensureLogs({ truncateExecutionsOnStart = false } = {}) {
 // --- Pending registry + wiring для адаптеров DWX-подтверждений ---
 const wiredAdapters = new WeakSet();
 const pendingIndex = new Map(); // pendingId(cID) -> { reqId, adapter, order, ts }
+const confirmedOrderByTicket = new Map(); // provider ticket -> original normalized order
+const confirmedOrderByCid = new Map(); // cid/pendingId -> original normalized order
 const trackerPending = new Map(); // reqId -> { ticker, tp, sp }
 const trackerIndex = new Map(); // ticket -> { ticker, tp, sp, cid }
+const levelOrderPositionMonitors = new Map(); // parent requestId -> { timer, children, ... }
 
 function extractCid(s) {
   const m = String(s).match(/cid[:=]\s*([a-f0-9]{8,})/i);
@@ -160,8 +272,23 @@ function wireAdapter(adapter, providerName) {
       status: 'ok',
       providerOrderId: String(ticket || ''),
       pendingId,
+      parentRequestId: rec.order?.meta?.parentRequestId,
+      childIndex: rec.order?.meta?.childIndex,
+      childCount: rec.order?.meta?.childCount,
+      strategyId: rec.order?.meta?.strategyId,
       order: rec.order
     };
+    const normalizedTicket = String(ticket || '');
+    const parentRequestId = rec.order?.meta?.parentRequestId;
+    const monitor = parentRequestId ? levelOrderPositionMonitors.get(parentRequestId) : null;
+    if (monitor && normalizedTicket) {
+      const child = monitor.children.find(item => item.requestId === rec.reqId || levelOrderChildCid(item) === String(pendingId));
+      if (child) child.providerOrderId = normalizedTicket;
+    }
+    if (normalizedTicket) confirmedOrderByTicket.set(normalizedTicket, rec.order);
+    if (pendingId) confirmedOrderByCid.set(String(pendingId), rec.order);
+    if (rec.cid) confirmedOrderByCid.set(String(rec.cid), rec.order);
+    if (rec.order?.meta?.cid) confirmedOrderByCid.set(String(rec.order.meta.cid), rec.order);
     appendJsonl(EXEC_LOG, { t: payload.ts, kind: 'confirm', ...payload, mtOrder });
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('execution:result', payload);
@@ -170,7 +297,7 @@ function wireAdapter(adapter, providerName) {
     if (info) {
       const cid = extractCid(mtOrder?.comment || '');
       if (cid) info.cid = cid;
-      trackerIndex.set(String(ticket), info);
+      trackerIndex.set(normalizedTicket, info);
       trackerPending.delete(rec.reqId);
     }
     console.log('[EXEC][CONFIRMED]', { reqId: rec.reqId, ticket: payload.providerOrderId });
@@ -207,9 +334,15 @@ function wireAdapter(adapter, providerName) {
   });
 
   adapter.on('position:opened', ({ ticket, order, origOrder }) => {
-    events.emit('position:opened', { ticket, order, origOrder, provider: providerName });
+    const normalizedTicket = String(ticket || '');
+    const cid = extractCid(order?.comment || order?.comment_string || order?.clientOrderId || order?.id || '');
+    const enrichedOrigOrder = origOrder
+      || confirmedOrderByTicket.get(normalizedTicket)
+      || (cid ? confirmedOrderByCid.get(cid) : null)
+      || (cid ? pendingIndex.get(cid)?.order : null);
+    events.emit('position:opened', { ticket, order, origOrder: enrichedOrigOrder, provider: providerName });
     if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('position:opened', { ticket, order, origOrder, provider: providerName });
+      mainWindow.webContents.send('position:opened', { ticket, order, origOrder: enrichedOrigOrder, provider: providerName });
     }
   });
 
@@ -435,6 +568,7 @@ function normalizeOrderPayload(payload) {
     return {
         instrumentType ,                // 'CX' | 'EQ' | 'FX'
       symbol,                        // 'BTCUSDT.P' | 'AAPL'
+      provider: payload.provider || payload.meta?.provider,
       side: payload.kind,            // 'BL'|'BSL'|'SL'|'SSL'
       type: payload.type,
       tickSize: payload.tickSize,
@@ -456,6 +590,7 @@ function normalizeOrderPayload(payload) {
   return {
     instrumentType,
     symbol,
+    provider: payload.provider || payload.meta?.provider,
     side: payload.side || payload.action, // 'BL'|'BSL'|'SL'|'SSL'
     type: payload.type,
     tickSize: payload.tickSize,
@@ -509,6 +644,88 @@ function pickOrderProviderName(order) {
 }
 
 // --- EQ normalization: BL/BSL/SL/SSL -> buy/sell + limit/stoplimit (для адаптеров типа J2T)
+function normalizeQuoteForValidation(quote) {
+  if (!quote || typeof quote !== 'object') return quote;
+  if (Number.isFinite(Number(quote.price))) return quote;
+  const bid = Number(quote.bid);
+  const ask = Number(quote.ask);
+  if (Number.isFinite(bid) && Number.isFinite(ask)) return { ...quote, price: (bid + ask) / 2 };
+  if (Number.isFinite(bid)) return { ...quote, price: bid };
+  if (Number.isFinite(ask)) return { ...quote, price: ask };
+  return quote;
+}
+
+function stopLevelOrderPositionMonitor(requestId) {
+  const monitor = levelOrderPositionMonitors.get(requestId);
+  if (monitor?.timer) clearTimeout(monitor.timer);
+  levelOrderPositionMonitors.delete(requestId);
+}
+
+function startLevelOrderPositionMonitor({ adapter, providerName, requestId, strategyId, symbol, children, timeoutMs = 45000, intervalMs = 750 }) {
+  if (!requestId || !adapter || typeof adapter.listOpenOrders !== 'function') return;
+  stopLevelOrderPositionMonitor(requestId);
+  const startedAt = Date.now();
+  const monitor = { adapter, providerName, requestId, strategyId, symbol, children: children || [], timer: null };
+  levelOrderPositionMonitors.set(requestId, monitor);
+
+  const tick = async () => {
+    try {
+      const openOrders = await adapter.listOpenOrders();
+      const scan = scanLevelOrderPositions(openOrders, monitor.children, symbol);
+      if (scan.ready) {
+        stopLevelOrderPositionMonitor(requestId);
+        const payload = {
+          requestId,
+          parentRequestId: requestId,
+          provider: providerName,
+          strategyId,
+          symbol,
+          expectedQty: scan.expectedQty,
+          foundQty: scan.foundQty,
+          expectedCids: scan.expectedCids,
+          foundCids: scan.foundCids
+        };
+        appendJsonl(EXEC_LOG, { t: nowTs(), kind: 'level-order-positions-ready', ...payload });
+        console.log('[LEVEL][POSITIONS_READY]', { requestId, symbol, foundQty: scan.foundQty, expectedQty: scan.expectedQty });
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('level-order:positions-ready', payload);
+        }
+        return;
+      }
+    } catch (err) {
+      console.warn('[LEVEL][POSITIONS_POLL_ERR]', { requestId, error: err?.message || String(err) });
+    }
+
+    if (Date.now() - startedAt >= timeoutMs) {
+      stopLevelOrderPositionMonitor(requestId);
+      let sample = [];
+      let scan = null;
+      try {
+        const openOrders = await adapter.listOpenOrders();
+        scan = scanLevelOrderPositions(openOrders, monitor.children, symbol);
+        sample = (openOrders || []).slice(0, 10).map(pos => ({
+          ticket: pos?.ticket,
+          type: pos?.type || pos?.order_type || pos?.cmd,
+          symbol: pos?.symbol,
+          comment: pos?.comment || pos?.comment_string,
+          qty: terminalPositionQty(pos),
+          isPosition: pos?.__isPosition === true
+        }));
+      } catch {}
+      console.warn('[LEVEL][POSITIONS_TIMEOUT]', { requestId, symbol, scan, sample });
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('level-order:positions-timeout', { requestId, parentRequestId: requestId, provider: providerName, strategyId, symbol });
+      }
+      return;
+    }
+    monitor.timer = setTimeout(tick, intervalMs);
+    levelOrderPositionMonitors.set(requestId, monitor);
+  };
+
+  monitor.timer = setTimeout(tick, intervalMs);
+  levelOrderPositionMonitors.set(requestId, monitor);
+}
+
 function normalizeEquityOrderForExecution(order) {
   if (!['EQ','FX','CX'].includes(String(order.instrumentType))) return order;
 
@@ -589,7 +806,7 @@ function setupIpc(orderSvc) {
       wireAdapter(adapter, providerName);
 
       const isOptionBlock = execOrder.instrumentType === 'OPT';
-      const quote = isOptionBlock ? { price: 1, tickSize: 0.01 } : await adapter.getQuote?.(execOrder.symbol);
+      const quote = isOptionBlock ? { price: 1, tickSize: 0.01 } : normalizeQuoteForValidation(await adapter.getQuote?.(execOrder.symbol));
       if (!isOptionBlock && (!quote || !Number.isFinite(quote.price))) {
         const rej = { status: 'rejected', provider: providerName, reason: 'No quote' };
         appendJsonl(EXEC_LOG, { t: ts, kind: 'place', valid: true, reqId, cid, provider: providerName, order: execOrder, result: rej });
@@ -598,7 +815,8 @@ function setupIpc(orderSvc) {
 
       const riskUsd = Number(order?.meta?.riskUsd);
       const stopPts = Number(execOrder.sl);
-      const isRiskBased = Number.isFinite(riskUsd) && riskUsd > 0 && Number.isFinite(stopPts) && stopPts > 0;
+      const isFixedQty = order?.meta?.fixedQty === true;
+      const isRiskBased = !isFixedQty && Number.isFinite(riskUsd) && riskUsd > 0 && Number.isFinite(stopPts) && stopPts > 0;
       const effectiveTickSize = resolveTickSize({
         symbol: execOrder.symbol,
         explicitTickSize: execOrder.tickSize,
@@ -667,6 +885,10 @@ function setupIpc(orderSvc) {
             provider: providerName,
             pendingId,
             cid: pendingId,
+            parentRequestId: execOrder.meta?.parentRequestId,
+            childIndex: execOrder.meta?.childIndex,
+            childCount: execOrder.meta?.childCount,
+            strategyId: execOrder.meta?.strategyId,
             order: execOrder
           });
         }
@@ -701,6 +923,10 @@ function setupIpc(orderSvc) {
           reason: result?.reason,
           providerOrderId: result?.providerOrderId,
           cid,
+          parentRequestId: execOrder.meta?.parentRequestId,
+          childIndex: execOrder.meta?.childIndex,
+          childCount: execOrder.meta?.childCount,
+          strategyId: execOrder.meta?.strategyId,
           payoff: result?.payoff || result?.raw?.payoff,
           raw: result?.raw,
           order: execOrder
@@ -749,6 +975,112 @@ function setupIpc(orderSvc) {
     queuePlaceOrder: queuePlaceOrderInternal,
     wireAdapter,
     mainWindow
+  });
+
+  ipcMain.handle('level-order:place', async (_evt, payload = {}) => {
+    const symbol = String(payload.ticker || payload.symbol || '').trim();
+    const instrumentType = payload.instrumentType || detectInstrumentType(symbol);
+    const providerName = payload.provider || pickProviderName(instrumentType);
+    const strategyId = payload.strategyId || generateCid();
+    const requestId = payload.requestId || `${nowTs()}_${Math.random().toString(36).slice(2,8)}`;
+
+    try {
+      const adapter = getAdapter(providerName);
+      wireAdapter(adapter, providerName);
+      const quote = await adapter.getQuote?.(symbol);
+      const bid = Number(quote?.bid);
+      const tickSize = resolveTickSize({
+        symbol,
+        explicitTickSize: payload.tickSize,
+        quoteTickSize: quote?.tickSize,
+        quoteTickSource: quote?.tickSource
+      });
+      const plan = calculateLimitBidTradePlan({
+        action: payload.action,
+        ticker: symbol,
+        instrumentType,
+        level: payload.level,
+        riskUsd: payload.riskUsd,
+        stopOffsetPts: payload.stopOffsetPts,
+        maxLot: payload.maxLot,
+        takeProfitPts: payload.takeProfitPts,
+        bid,
+        tickSize,
+        lot: payload.lot || 1,
+        orderCalculator: orderCalc
+      });
+      if (!plan.ok) {
+        const rej = { status: 'rejected', provider: providerName, reason: plan.reason };
+        appendJsonl(EXEC_LOG, { t: nowTs(), kind: 'level-order', valid: false, reqId: requestId, provider: providerName, payload, quote, result: rej });
+        return rej;
+      }
+
+      const results = [];
+      for (let i = 0; i < plan.childQtys.length; i += 1) {
+        const childReqId = `${requestId}_${i + 1}`;
+        const childPayload = {
+          ticker: symbol,
+          event: 'levelOrder',
+          price: plan.bid,
+          kind: plan.orderKind,
+          instrumentType,
+          tickSize: plan.tickSize,
+          provider: providerName,
+          meta: {
+            requestId: childReqId,
+            qty: plan.childQtys[i],
+            stopPts: plan.stopPts,
+            takePts: plan.takeProfitPts,
+            riskUsd: plan.riskUsd,
+            fixedQty: true,
+            strategy: 'limitBidTrade',
+            strategyId,
+            parentRequestId: requestId,
+            childIndex: i + 1,
+            childCount: plan.childQtys.length,
+            level: plan.level,
+            bid: plan.bid,
+            stopOffsetPts: plan.stopOffsetPts,
+            pointSize: payload.pointSize,
+            stopPrice: plan.stopPrice
+          }
+        };
+        const res = await queuePlaceOrderInternal(childPayload);
+        results.push({ requestId: childReqId, qty: plan.childQtys[i], result: res });
+        if (!res || res.status === 'rejected' || res.status === 'error') {
+          const rej = {
+            status: 'rejected',
+            provider: providerName,
+            reason: res?.reason || 'Level order child rejected',
+            raw: { plan, results }
+          };
+          appendJsonl(EXEC_LOG, { t: nowTs(), kind: 'level-order', valid: true, reqId: requestId, provider: providerName, strategyId, plan, result: rej });
+          return rej;
+        }
+      }
+
+      const ok = {
+        status: 'ok',
+        provider: providerName,
+        providerOrderId: `level:${strategyId}`,
+        strategyId,
+        raw: { plan, results }
+      };
+      startLevelOrderPositionMonitor({
+        adapter,
+        providerName,
+        requestId,
+        strategyId,
+        symbol,
+        children: results
+      });
+      appendJsonl(EXEC_LOG, { t: nowTs(), kind: 'level-order', valid: true, reqId: requestId, provider: providerName, strategyId, plan, result: ok });
+      return ok;
+    } catch (err) {
+      const reason = err?.message || String(err);
+      appendJsonl(EXEC_LOG, { t: nowTs(), kind: 'level-order', valid: true, reqId: requestId, provider: providerName, strategyId, payload, error: reason });
+      return { status: 'rejected', provider: providerName, reason };
+    }
   });
 
   ipcMain.handle('execution:stop-retry', async (_evt, reqId) => {

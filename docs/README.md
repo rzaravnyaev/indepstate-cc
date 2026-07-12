@@ -22,6 +22,7 @@ This directory contains high-level notes about the codebase.
 - `app/services/commandLine.js` – parses text commands sent from the renderer. See [command-line.md](command-line.md) for available commands.
 - `app/services/actions-bus/*` – automation bus connecting service events to command runners. See [actions-bus.md](actions-bus.md) for configuration and usage details.
 - `app/services/orderCalculator.js` – shared service computing stop-loss, take-profit and position size for cards and pending orders.
+- `app/services/levelOrder/*` – custom level-trading card, `levelOrder` / `lo` command, split child order execution, and terminal-position readiness monitoring. See [level-order.md](level-order.md).
   - `app/services/tvProxy/*` – spawns a mitmdump proxy exposing TradingView traffic to listeners. See [tv-proxy.md](tv-proxy.md) for details.
   - `app/services/tvListener/*` – registers listeners for TradingView messages, storing the last horizontal line and optionally forwarding `@ATR` messages to a webhook. See [tv-listener.md](tv-listener.md) for service details and automation hooks.
 - `app/services/autoUpdater/*` – GitHub-based auto-updater. See [auto-updater.md](auto-updater.md) for configuration and release instructions.

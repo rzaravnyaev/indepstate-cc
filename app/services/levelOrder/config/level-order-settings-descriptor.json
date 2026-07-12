@@ -1,0 +1,52 @@
+{
+  "properties": {
+    "name": "Level orders"
+  },
+  "options": {
+    "defaults": {
+      "description": "Default level order values",
+      "riskUsd": {
+        "type": "number",
+        "description": "Default risk in USD"
+      },
+      "maxLot": {
+        "type": "number",
+        "description": "Default max lot per child order; 0 disables splitting"
+      },
+      "stopOffsetPts": {
+        "type": "number",
+        "description": "Default stop offset from level in points"
+      },
+      "takeProfitPts": {
+        "type": "number",
+        "description": "Optional default take profit in points"
+      }
+    },
+    "symbols": {
+      "description": "Ticker-specific level order defaults",
+      "item": {
+        "description": "Ticker defaults",
+        "ticker": {
+          "type": "string",
+          "description": "Ticker"
+        },
+        "riskUsd": {
+          "type": "number",
+          "description": "Risk in USD"
+        },
+        "maxLot": {
+          "type": "number",
+          "description": "Max lot per child order; 0 disables splitting"
+        },
+        "stopOffsetPts": {
+          "type": "number",
+          "description": "Stop offset from level in points"
+        },
+        "takeProfitPts": {
+          "type": "number",
+          "description": "Optional take profit in points"
+        }
+      }
+    }
+  }
+}

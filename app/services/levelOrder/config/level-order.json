@@ -1,0 +1,9 @@
+{
+  "defaults": {
+    "riskUsd": 50,
+    "maxLot": 0,
+    "stopOffsetPts": 10,
+    "takeProfitPts": null
+  },
+  "symbols": []
+}

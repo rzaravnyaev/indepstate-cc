@@ -7,7 +7,9 @@ const tradeRules = servicesApi.tradeRules || require('./services/tradeRules');
 const {detectInstrumentType} = require("./services/instruments");
 const {resolveTickSize} = require('./services/points');
 const orderCalc = servicesApi.orderCalculator || require('./services/orderCalculator');
+const { resolveLevelOrderDefaults } = require('./services/levelOrder/strategy');
 const orderCardsCfg = loadConfig('../services/orderCards/config/order-cards.json');
+let levelOrderCfg = loadConfig('../services/levelOrder/config/level-order.json');
 const envEquityStop = Number(process.env.DEFAULT_EQUITY_STOP_USD);
 const EQUITY_DEFAULT_STOP_USD = Number.isFinite(envEquityStop)
   ? envEquityStop
@@ -120,6 +122,10 @@ const pendingExecLabels = new Map(); // key -> label
 const pendingByReqId = new Map();
 const pendingIdByReqId = new Map();
 const ticketToKey = new Map(); // ticket -> rowKey
+const levelOrderGroups = new Map(); // parent requestId -> grouped child state
+const levelOrderChildToGroup = new Map(); // child requestId -> parent requestId
+const levelOrderPendingToGroup = new Map(); // adapter pendingId/cid -> parent requestId
+const levelOrderTicketToGroup = new Map(); // provider ticket -> parent requestId
 const placedOrderByKey = new Map(); // rowKey -> { provider, ticket, symbol }
 const retryCounts = new Map(); // reqId -> retry count
 const instantExecutedKeys = new Set();
@@ -261,6 +267,74 @@ function appendUiWindowStateTools(form) {
   refresh();
 }
 
+function appendTickSizeBySymbolTools(form, bySymbol = {}) {
+  const group = document.createElement('div');
+  group.className = 'settings-group settings-dynamic-map';
+
+  const title = document.createElement('div');
+  title.className = 'settings-group-title';
+  title.textContent = 'Tick size overrides by symbol';
+  group.appendChild(title);
+
+  const rows = document.createElement('div');
+  rows.className = 'settings-dynamic-map-rows';
+  group.appendChild(rows);
+
+  const markDirty = () => {
+    form.dataset.dirty = '1';
+  };
+  const addRow = (symbol = '', tickSize = '') => {
+    const row = document.createElement('div');
+    row.className = 'settings-dynamic-map-row tick-size-symbol-row';
+    row.style.display = 'grid';
+    row.style.gridTemplateColumns = '1fr 110px auto';
+    row.style.gap = '8px';
+    row.style.alignItems = 'center';
+    row.style.marginBottom = '8px';
+
+    const symbolInput = document.createElement('input');
+    symbolInput.type = 'text';
+    symbolInput.placeholder = 'SYMBOL';
+    symbolInput.value = symbol;
+    symbolInput.dataset.role = 'symbol';
+    symbolInput.addEventListener('input', markDirty);
+    row.appendChild(symbolInput);
+
+    const tickInput = document.createElement('input');
+    tickInput.type = 'number';
+    tickInput.step = 'any';
+    tickInput.placeholder = 'Tick size';
+    tickInput.value = tickSize == null ? '' : String(tickSize);
+    tickInput.dataset.role = 'tickSize';
+    tickInput.addEventListener('input', markDirty);
+    row.appendChild(tickInput);
+
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.textContent = 'Remove';
+    remove.className = 'settings-array-remove';
+    remove.addEventListener('click', () => {
+      row.remove();
+      markDirty();
+    });
+    row.appendChild(remove);
+    rows.appendChild(row);
+  };
+
+  Object.entries(bySymbol || {}).forEach(([symbol, tickSize]) => addRow(symbol, tickSize));
+
+  const add = document.createElement('button');
+  add.type = 'button';
+  add.textContent = 'Add symbol override';
+  add.className = 'settings-array-add';
+  add.addEventListener('click', () => {
+    addRow('', '');
+    markDirty();
+  });
+  group.appendChild(add);
+  form.appendChild(group);
+}
+
 function showSection(name) {
   [...$settingsSections.querySelectorAll('div[data-section]')].forEach(d => {
     d.classList.toggle('active', d.dataset.section === name);
@@ -273,7 +347,10 @@ function showSection(name) {
   }
   ipcRenderer.invoke('settings:get', name).then((res = {}) => {
     const cfg = res.config || res;
-    const desc = (res.descriptor && res.descriptor.options) || {};
+    const desc = { ...((res.descriptor && res.descriptor.options) || {}) };
+    const formCfg = name === 'tick-sizes' ? { ...(cfg || {}) } : cfg;
+    if (name === 'tick-sizes') delete formCfg.bySymbol;
+    if (name === 'tick-sizes') delete desc.bySymbol;
     const form = document.createElement('form');
     form.dataset.section = name;
     const hasOwn = Object.prototype.hasOwnProperty;
@@ -290,6 +367,14 @@ function showSection(name) {
         const itemsWrap = document.createElement('div');
         const baseParts = prefix ? prefix.split('.') : [];
         const itemIsObjDesc = itemDesc && typeof itemDesc === 'object' && !itemDesc.type && Object.keys(itemDesc).length;
+        if (prefix) {
+          const marker = document.createElement('input');
+          marker.type = 'hidden';
+          marker.dataset.field = prefix;
+          marker.dataset.arrayMarker = '1';
+          marker.value = '';
+          parent.appendChild(marker);
+        }
         const renderItem = (val, idx) => {
           const d = itemDesc;
           const defaultVal = getDefault(d);
@@ -457,8 +542,9 @@ function showSection(name) {
         }
       }
     };
-    build(form, cfg, desc);
+    build(form, formCfg, desc);
     if (name === 'ui') appendUiWindowStateTools(form);
+    if (name === 'tick-sizes') appendTickSizeBySymbolTools(form, cfg.bySymbol || {});
     settingsForms.set(name, form);
     $settingsFields.innerHTML = '';
     $settingsFields.appendChild(form);
@@ -696,6 +782,12 @@ function runCommand(str) {
 }
 
 function setCardState(key, state) {
+  if (state) {
+    cardStates.set(key, state);
+  } else {
+    cardStates.delete(key);
+  }
+
   const card = cardByKey(key);
   if (!card) return;
   const isOptionCard = card.dataset.instrumentType === 'OPT';
@@ -710,7 +802,6 @@ function setCardState(key, state) {
   const buttons = card.querySelectorAll('button.btn');
 
   if (state) {
-    cardStates.set(key, state);
     status.style.display = 'inline-block';
     status.className = `card__status card__status--${state}`;
     if (state === 'pending-exec') {
@@ -862,7 +953,6 @@ function setCardState(key, state) {
       if (retryBtn) retryBtn.style.display = 'none';
     }
   } else {
-    cardStates.delete(key);
     card.classList.remove('card--mini');
     status.style.display = 'none';
     status.textContent = '';
@@ -1165,6 +1255,19 @@ function createCard(row, index) {
   // Левая часть: тикер (+ bid/ask при наявності)
   const left = el('div', null, null, {style: 'display:flex;align-items:center;gap:6px'});
   left.appendChild(el('div', null, instrumentType === 'OPT' ? (row.name || row.ticker) : row.ticker, {style: 'font-weight:600;font-size:13px'}));
+  let $levelPointSize = null;
+  if (row.cardType === 'levelOrder') {
+    $levelPointSize = inputNumber('Pt', 'point-size');
+    $levelPointSize.title = 'Point price override';
+    Object.assign($levelPointSize.style, {
+      width: '58px',
+      height: '20px',
+      padding: '2px 5px',
+      fontSize: '11px',
+      borderRadius: '5px'
+    });
+    left.appendChild($levelPointSize);
+  }
   if (SHOW_BID_ASK) {
     const $bidask = el('span', 'card__bidask');
     $bidask.title = 'Bid / Ask';
@@ -1236,13 +1339,13 @@ function createCard(row, index) {
   let body;
   switch (instrumentType) {
     case 'EQ':
-      body = createEquitiesBody(row, key);
+      body = row.cardType === 'levelOrder' ? createLevelOrderBody(row, key, $levelPointSize) : createEquitiesBody(row, key);
       break;
     case 'FX':
-      body = createFxBody(row, key);
+      body = row.cardType === 'levelOrder' ? createLevelOrderBody(row, key, $levelPointSize) : createFxBody(row, key);
       break;
     case 'CX':
-      body = createCryptoBody(row, key);
+      body = row.cardType === 'levelOrder' ? createLevelOrderBody(row, key, $levelPointSize) : createCryptoBody(row, key);
       break;
     case 'OPT':
       body = createOptionBody(row, key);
@@ -1259,13 +1362,19 @@ function createCard(row, index) {
     const b = btn(label, cls, async () => {
       const v = body.validate();
       if (!v.valid) return;
-      await place(kind, row, v, instrumentType, label);
+      if (row.cardType === 'levelOrder') {
+        await placeLevelOrder(kind, row, v, instrumentType, label);
+      } else {
+        await place(kind, row, v, instrumentType, label);
+      }
     });
     b.setAttribute('data-kind', kind);
     return b;
   };
   const cardButtons = instrumentType === 'OPT'
     ? [{ label: 'OPEN', action: 'OPEN', style: 'bl' }]
+    : row.cardType === 'levelOrder'
+      ? [{ label: 'LB', action: 'LB', style: 'bl' }, { label: 'LS', action: 'LS', style: 'sl' }]
     : CARD_BUTTONS;
   const cols = Math.ceil(cardButtons.length / BUTTON_ROWS);
   btns.style.gridTemplateColumns = `repeat(${cols},1fr)`;
@@ -1290,6 +1399,130 @@ function createCard(row, index) {
   card._validate = (commit = false) => body.validate(commit);
 
   return card;
+}
+
+function createLevelOrderBody(row, key, $pointSize) {
+  const defaults = resolveLevelOrderDefaults(levelOrderCfg, row.ticker);
+  const saved = uiState.get(key) || {
+    level: row.level != null ? String(row.level) : '',
+    risk: row.riskUsd != null ? String(row.riskUsd) : (defaults.riskUsd != null ? String(defaults.riskUsd) : ''),
+    stopOffsetPts: row.stopOffsetPts != null ? String(row.stopOffsetPts) : (defaults.stopOffsetPts != null ? String(defaults.stopOffsetPts) : ''),
+    maxLot: row.maxLot != null ? String(row.maxLot) : (defaults.maxLot != null ? String(defaults.maxLot) : '0'),
+    takeProfitPts: row.takeProfitPts != null ? String(row.takeProfitPts) : (defaults.takeProfitPts != null ? String(defaults.takeProfitPts) : ''),
+    pointSize: row.pointSize != null ? String(row.pointSize) : ''
+  };
+  if ($pointSize) $pointSize.value = saved.pointSize;
+
+  const line = el('div', 'quad-line level-order-line');
+  line.style.display = 'grid';
+  line.style.gridTemplateColumns = '1fr 1fr 1fr 1fr 1fr';
+  line.style.alignItems = 'center';
+  line.style.gap = line.style.gap || '8px';
+
+  const $level = inputNumber('Level', 'level');
+  const $risk = inputNumber('Risk $', 'risk');
+  const $stopOffset = inputNumber('Stop off', 'sl');
+  const $maxLot = inputNumber('Max lot', 'qty');
+  const $tp = inputNumber('TP pts', 'tp');
+
+  $level.value = saved.level;
+  $risk.value = saved.risk;
+  $stopOffset.value = saved.stopOffsetPts;
+  $maxLot.value = saved.maxLot;
+  $tp.value = saved.takeProfitPts;
+
+  line.appendChild($level);
+  line.appendChild($risk);
+  line.appendChild($stopOffset);
+  line.appendChild($maxLot);
+  line.appendChild($tp);
+
+  const persist = () => {
+    uiState.set(key, {
+      level: $level.value,
+      risk: $risk.value,
+      stopOffsetPts: $stopOffset.value,
+      maxLot: $maxLot.value,
+      takeProfitPts: $tp.value,
+      pointSize: $pointSize ? $pointSize.value : ''
+    });
+  };
+
+  const body = {
+    type: 'levelOrder',
+    line,
+    setButtons($btns) {
+      this._btns = $btns;
+    },
+    setNote($note) {
+      this._note = $note;
+    },
+    validate() {
+      const level = _normNum($level.value);
+      const risk = _normNum($risk.value);
+      const stopOffsetPts = _normNum($stopOffset.value);
+      const maxLot = _normNum($maxLot.value);
+      const takeProfitPts = _normNum($tp.value);
+      const pointSize = _normNum($pointSize?.value);
+      const info = instrumentInfo.get(row.ticker);
+      const bidOk = Number.isFinite(Number(info?.bid)) && Number(info.bid) > 0;
+      const pointSizeOk = !$pointSize || $pointSize.value === '' || (Number.isFinite(pointSize) && pointSize > 0);
+      const tick = pointSizeOk && Number.isFinite(pointSize) && pointSize > 0 ? pointSize : tickSize(row);
+      const tickOk = Number.isFinite(tick) && tick > 0;
+      const tpOk = $tp.value === '' || (Number.isFinite(takeProfitPts) && takeProfitPts > 0);
+      const maxLotOk = Number.isFinite(maxLot) && maxLot >= 0;
+      const valid = isPos(level) && isPos(risk) && isSL(stopOffsetPts) && maxLotOk && tpOk && pointSizeOk && bidOk && tickOk;
+
+      line.classList.toggle('card--invalid', !valid);
+      const setErr = (inp, bad) => inp.classList.toggle('input--error', !!bad);
+      setErr($level, !isPos(level));
+      setErr($risk, !isPos(risk));
+      setErr($stopOffset, !isSL(stopOffsetPts));
+      setErr($maxLot, !maxLotOk);
+      setErr($tp, !tpOk);
+      if ($pointSize) setErr($pointSize, !pointSizeOk);
+
+      const reason = !isPos(level) ? 'Level > 0'
+        : !isPos(risk) ? 'Risk $ > 0'
+          : !isSL(stopOffsetPts) ? 'Stop offset pts > 0'
+            : !maxLotOk ? 'Max lot >= 0'
+              : !tpOk ? 'TP pts > 0 or blank'
+                : !pointSizeOk ? 'Point price > 0 or blank'
+                  : !bidOk ? 'Bid quote required'
+                    : !tickOk ? 'Tick size required'
+                      : '';
+      if (this._btns) this._btns.querySelectorAll('button').forEach(b => {
+        b.disabled = !valid;
+        if (!valid) b.title = reason; else b.removeAttribute('title');
+      });
+      if (this._note) {
+        this._note.textContent = reason;
+        this._note.style.display = reason ? 'block' : 'none';
+      }
+      persist();
+      return {
+        valid,
+        type: 'levelOrder',
+        level,
+        risk,
+        stopOffsetPts,
+        maxLot,
+        takeProfitPts: $tp.value === '' ? null : takeProfitPts,
+        pointSize: $pointSize && $pointSize.value !== '' ? pointSize : null,
+        tickSize: tick
+      };
+    }
+  };
+
+  [$level, $risk, $stopOffset, $maxLot, $tp, $pointSize].filter(Boolean).forEach(inp => {
+    inp.addEventListener('input', () => {
+      markTouched(row.ticker);
+      persist();
+      body.validate();
+    });
+  });
+
+  return body;
 }
 
 function createOptionBody(row, key) {
@@ -2103,6 +2336,103 @@ function revalidateCardsForTicker(ticker) {
   });
 }
 
+function ensureLevelOrderGroup(parentRequestId, key, total = null) {
+  if (!parentRequestId || !key) return null;
+  let group = levelOrderGroups.get(parentRequestId);
+  if (!group) {
+    group = {
+      parentRequestId,
+      key,
+      total: Number.isFinite(Number(total)) && Number(total) > 0 ? Number(total) : null,
+      childReqIds: new Set(),
+      placedReqIds: new Set(),
+      openedTickets: new Set(),
+      closedTickets: new Set(),
+      tickets: new Set()
+    };
+    levelOrderGroups.set(parentRequestId, group);
+  } else {
+    group.key = key;
+    if (Number.isFinite(Number(total)) && Number(total) > 0) group.total = Number(total);
+  }
+  return group;
+}
+
+function findLevelOrderGroupByReqId(reqId) {
+  const parent = levelOrderChildToGroup.get(reqId);
+  return parent ? levelOrderGroups.get(parent) : null;
+}
+
+function findLevelOrderGroupByPendingId(pendingId) {
+  const parent = levelOrderPendingToGroup.get(String(pendingId || ''));
+  return parent ? levelOrderGroups.get(parent) : null;
+}
+
+function findOrRegisterLevelOrderGroupFromMeta(meta = {}, fallbackKey) {
+  const reqId = meta.requestId;
+  const parentRequestId = meta.parentRequestId;
+  if (!parentRequestId || !reqId) return null;
+  const existing = findLevelOrderGroupByReqId(reqId);
+  if (existing) return existing;
+  const childCount = Number(meta.childCount);
+  const key = fallbackKey || pendingByReqId.get(parentRequestId);
+  if (!key) return null;
+  const group = ensureLevelOrderGroup(parentRequestId, key, childCount);
+  group.childReqIds.add(reqId);
+  levelOrderChildToGroup.set(reqId, parentRequestId);
+  pendingByReqId.set(reqId, key);
+  return group;
+}
+
+function registerLevelOrderChild(rec = {}, fallbackKey) {
+  const meta = {
+    ...(rec.order?.meta || {}),
+    requestId: rec.order?.meta?.requestId || rec.reqId,
+    parentRequestId: rec.order?.meta?.parentRequestId || rec.parentRequestId,
+    childCount: rec.order?.meta?.childCount || rec.childCount,
+    childIndex: rec.order?.meta?.childIndex || rec.childIndex
+  };
+  const parentRequestId = meta.parentRequestId;
+  const reqId = meta.requestId || rec.reqId;
+  if (!parentRequestId || !reqId) return null;
+  const childCount = Number(meta.childCount);
+  const key = fallbackKey || pendingByReqId.get(parentRequestId) || findKeyByTicker(rec.order?.symbol || rec.order?.ticker);
+  if (!key) return null;
+  const group = ensureLevelOrderGroup(parentRequestId, key, childCount);
+  group.childReqIds.add(reqId);
+  levelOrderChildToGroup.set(reqId, parentRequestId);
+  if (rec.pendingId) levelOrderPendingToGroup.set(String(rec.pendingId), parentRequestId);
+  if (rec.cid) levelOrderPendingToGroup.set(String(rec.cid), parentRequestId);
+  pendingByReqId.set(reqId, key);
+  return group;
+}
+
+function registerLevelOrderTicket(group, ticket, key) {
+  const normalized = String(ticket || '').trim();
+  if (!group || !normalized) return;
+  group.tickets.add(normalized);
+  levelOrderTicketToGroup.set(normalized, group.parentRequestId);
+  ticketToKey.set(normalized, key || group.key);
+}
+
+function levelOrderAllPlaced(group) {
+  if (!group) return false;
+  const total = group.total || group.childReqIds.size;
+  return total > 0 && group.placedReqIds.size >= total;
+}
+
+function levelOrderAllOpened(group) {
+  if (!group) return false;
+  const total = group.total || group.childReqIds.size;
+  return total > 0 && group.openedTickets.size >= total;
+}
+
+function levelOrderAllClosed(group) {
+  if (!group) return false;
+  const total = group.tickets.size || group.total || group.childReqIds.size;
+  return total > 0 && group.closedTickets.size >= total;
+}
+
 // ======= Order placement (shared) =======
 const PENDING_ACTIONS = {
   BC: {strategy: 'consolidation', side: 'long'},
@@ -2259,6 +2589,80 @@ async function place(kind, row, v, instrumentType, btnLabel) {
   }
 }
 
+async function placeLevelOrder(kind, row, v, instrumentType, btnLabel) {
+  if (!v.valid) return;
+
+  const key = rowKey(row);
+  const requestId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const strategyId = `${requestId}_${String(kind).toLowerCase()}`;
+  pendingByReqId.set(requestId, key);
+  ensureLevelOrderGroup(requestId, key);
+  retryCounts.set(requestId, 0);
+  pendingExecLabels.set(key, btnLabel || kind);
+  setCardState(key, 'pending-exec');
+  const card = cardByKey(key);
+  if (card) {
+    card.dataset.reqId = requestId;
+    const rb = card.querySelector('.retry-btn');
+    if (rb) rb.textContent = '0';
+  }
+
+  try {
+    const res = await ipcRenderer.invoke('level-order:place', {
+      ticker: row.ticker,
+      provider: row.provider,
+      instrumentType,
+      action: kind,
+      level: v.level,
+      riskUsd: v.risk,
+      stopOffsetPts: v.stopOffsetPts,
+      maxLot: v.maxLot,
+      takeProfitPts: v.takeProfitPts,
+      pointSize: v.pointSize,
+      tickSize: v.tickSize,
+      requestId,
+      strategyId
+    });
+    if (!res || res.status === 'rejected' || res.status === 'error') {
+      levelOrderGroups.delete(requestId);
+      setCardState(key, null);
+      toast(`x ${row.ticker}: ${res?.reason || 'Rejected'}`);
+      shakeCard(key);
+      render();
+      return;
+    }
+    const group = levelOrderGroups.get(requestId);
+    if (group && res.raw?.plan?.childQtys) group.total = res.raw.plan.childQtys.length;
+    if (group && Array.isArray(res.raw?.results)) {
+      for (const child of res.raw.results) {
+        const childReqId = child?.requestId;
+        const childStatus = child?.result?.status;
+        if (!childReqId || (childStatus !== 'ok' && childStatus !== 'simulated')) continue;
+        group.childReqIds.add(childReqId);
+        levelOrderChildToGroup.set(childReqId, group.parentRequestId);
+        const providerOrderId = String(child?.result?.providerOrderId || '');
+        if (providerOrderId.startsWith('pending:')) {
+          levelOrderPendingToGroup.set(providerOrderId.slice('pending:'.length), group.parentRequestId);
+        } else if (providerOrderId) {
+          registerLevelOrderTicket(group, providerOrderId, key);
+        }
+      }
+    }
+    if (group && levelOrderAllPlaced(group)) {
+      setCardState(key, levelOrderAllOpened(group) ? 'executing' : 'pending-exec');
+    } else {
+      setCardState(key, 'pending-exec');
+    }
+    toast(`... ${row.ticker}: level order sent`);
+    render();
+  } catch (e) {
+    setCardState(key, null);
+    toast(`x ${row.ticker}: ${e.message || e}`);
+    shakeCard(key);
+    render();
+  }
+}
+
 function clearPendingByKey(key) {
   for (const [rid, k] of pendingByReqId.entries()) {
     if (k === key) {
@@ -2266,6 +2670,15 @@ function clearPendingByKey(key) {
       pendingIdByReqId.delete(rid);
       retryCounts.delete(rid);
     }
+  }
+  for (const [parentReqId, group] of levelOrderGroups.entries()) {
+    if (group.key !== key) continue;
+    levelOrderGroups.delete(parentReqId);
+    for (const childReqId of group.childReqIds) levelOrderChildToGroup.delete(childReqId);
+    for (const [pendingId, parent] of levelOrderPendingToGroup.entries()) {
+      if (parent === parentReqId) levelOrderPendingToGroup.delete(pendingId);
+    }
+    for (const ticket of group.tickets) levelOrderTicketToGroup.delete(ticket);
   }
   pendingExecLabels.delete(key);
   placedOrderByKey.delete(key);
@@ -2329,6 +2742,8 @@ ipcRenderer.on('execution:pending', (_evt, rec) => {
 
   let key = pendingByReqId.get(reqId);
   if (!key) key = findKeyByTicker(rec?.order?.symbol || rec?.order?.ticker);
+  const levelGroup = registerLevelOrderChild(rec, key);
+  if (levelGroup) key = levelGroup.key;
   if (!key) return;
 
   pendingByReqId.set(reqId, key);
@@ -2346,10 +2761,10 @@ ipcRenderer.on('execution:pending', (_evt, rec) => {
     const rb = card.querySelector('.retry-btn');
     if (rb) rb.textContent = '0';
   }
-  if (cardStates.get(key) !== 'pending-exec' || rec?.order?.side) {
+  if (!levelGroup && (cardStates.get(key) !== 'pending-exec' || rec?.order?.side)) {
     setCardState(key, 'pending');
   }
-  if (card && rec?.order) {
+  if (!levelGroup && card && rec?.order) {
     const ui = uiState.get(key) || {};
     if (rec.order.qty != null) {
       ui.qty = String(rec.order.qty);
@@ -2500,7 +2915,8 @@ ipcRenderer.on('orders:new', (_evt, row) => {
 ipcRenderer.on('execution:result', (_evt, rec) => {
   const reqId = rec?.order?.meta?.requestId || rec?.reqId;
   if (!reqId) return;
-  const key = pendingByReqId.get(reqId);
+  const levelGroup = registerLevelOrderChild(rec) || findLevelOrderGroupByPendingId(rec?.pendingId || rec?.cid);
+  const key = levelGroup?.key || pendingByReqId.get(reqId);
   if (!key) return;
 
   pendingByReqId.delete(reqId);
@@ -2515,6 +2931,30 @@ ipcRenderer.on('execution:result', (_evt, rec) => {
   }
 
   const ok = rec.status === 'ok' || rec.status === 'simulated';
+  if (levelGroup) {
+    if (ok) {
+      levelGroup.placedReqIds.add(reqId);
+      if (rec.providerOrderId) registerLevelOrderTicket(levelGroup, rec.providerOrderId, key);
+      if (levelOrderAllPlaced(levelGroup)) {
+        setCardState(key, levelOrderAllOpened(levelGroup) ? 'executing' : 'pending-exec');
+        const cardEl = cardByKey(key);
+        if (cardEl) {
+          delete cardEl.dataset.reqId;
+          delete cardEl.dataset.pendingId;
+        }
+        toast(`✔ ${rec.order?.symbol || ''}: level order group placed`);
+        render();
+      }
+      return;
+    }
+    setCardState(key, null);
+    render();
+    shakeCard(key);
+    if (card) card.title = rec.reason || 'Rejected';
+    toast(`✖ ${rec.order?.symbol || ''}: ${rec.reason || 'Rejected'}`);
+    return;
+  }
+
   if (ok) {
     const st = cardStates.get(key);
     if (st !== 'executing' && st !== 'profit' && st !== 'loss') {
@@ -2550,25 +2990,82 @@ ipcRenderer.on('execution:result', (_evt, rec) => {
 });
 
 ipcRenderer.on('position:opened', (_evt, rec) => {
-  let key = ticketToKey.get(String(rec.ticket));
+  const ticket = String(rec.ticket);
+  let levelGroup = levelOrderGroups.get(levelOrderTicketToGroup.get(ticket));
+  let key = levelGroup?.key || ticketToKey.get(ticket);
+  if (!levelGroup && rec.origOrder?.meta?.parentRequestId) {
+    const groupByMeta = findLevelOrderGroupByReqId(rec.origOrder.meta.requestId)
+      || findOrRegisterLevelOrderGroupFromMeta(rec.origOrder.meta, key || pendingByReqId.get(rec.origOrder.meta.parentRequestId));
+    if (groupByMeta) {
+      levelGroup = groupByMeta;
+      key = key || groupByMeta.key;
+      registerLevelOrderTicket(levelGroup, ticket, key);
+    }
+  }
   if (!key) {
-    const reqId = rec.origOrder?.meta?.requestId;
+    const meta = rec.origOrder?.meta || {};
+    const reqId = meta.requestId;
     if (reqId) {
-      key = pendingByReqId.get(reqId);
-      if (key) ticketToKey.set(String(rec.ticket), key);
+      const fallbackKey = meta.parentRequestId ? pendingByReqId.get(meta.parentRequestId) : null;
+      const groupByReq = findLevelOrderGroupByReqId(reqId) || findOrRegisterLevelOrderGroupFromMeta(meta, fallbackKey);
+      if (groupByReq) levelGroup = groupByReq;
+      key = groupByReq?.key || pendingByReqId.get(reqId);
+      if (key) {
+        ticketToKey.set(ticket, key);
+        if (levelGroup) registerLevelOrderTicket(levelGroup, ticket, key);
+      }
     }
   }
   if (!key) return;
+  if (levelGroup) {
+    levelGroup.openedTickets.add(ticket);
+    markRowOpened(key);
+    if (levelOrderAllOpened(levelGroup)) {
+      placedOrderByKey.delete(key);
+      setCardState(key, 'executing');
+      render();
+    }
+    return;
+  }
   placedOrderByKey.delete(key);
   markRowOpened(key);
   setCardState(key, 'executing');
   render();
 });
 
-ipcRenderer.on('position:closed', (_evt, rec) => {
-  const key = ticketToKey.get(String(rec.ticket));
+ipcRenderer.on('level-order:positions-ready', (_evt, rec = {}) => {
+  const parentRequestId = rec.parentRequestId || rec.requestId;
+  const group = levelOrderGroups.get(parentRequestId);
+  const key = group?.key || pendingByReqId.get(parentRequestId);
   if (!key) return;
-  ticketToKey.delete(String(rec.ticket));
+  if (group) {
+    group.foundQty = Number(rec.foundQty);
+    group.expectedQty = Number(rec.expectedQty);
+    for (const cid of rec.foundCids || []) levelOrderPendingToGroup.set(String(cid), parentRequestId);
+  }
+  setCardState(key, 'executing');
+  render();
+});
+
+ipcRenderer.on('position:closed', (_evt, rec) => {
+  const ticket = String(rec.ticket);
+  const levelGroup = levelOrderGroups.get(levelOrderTicketToGroup.get(ticket));
+  const key = levelGroup?.key || ticketToKey.get(ticket);
+  if (!key) return;
+  ticketToKey.delete(ticket);
+  if (levelGroup) {
+    levelGroup.closedTickets.add(ticket);
+    markRowClosed(key);
+    if (levelOrderAllClosed(levelGroup)) {
+      if (typeof rec.profit === 'number') {
+        setCardState(key, rec.profit >= 0 ? 'profit' : 'loss');
+        render();
+      } else {
+        removeRowByKey(key);
+      }
+    }
+    return;
+  }
   markRowClosed(key);
   if (typeof rec.profit === 'number') {
     setCardState(key, rec.profit >= 0 ? 'profit' : 'loss');
@@ -2579,9 +3076,15 @@ ipcRenderer.on('position:closed', (_evt, rec) => {
 });
 
 ipcRenderer.on('order:cancelled', (_evt, rec) => {
-  const key = ticketToKey.get(String(rec.ticket));
+  const ticket = String(rec.ticket);
+  const levelGroup = levelOrderGroups.get(levelOrderTicketToGroup.get(ticket));
+  const key = levelGroup?.key || ticketToKey.get(ticket);
   if (key) {
-    ticketToKey.delete(String(rec.ticket));
+    ticketToKey.delete(ticket);
+    if (levelGroup) {
+      levelGroup.closedTickets.add(ticket);
+      if (!levelOrderAllClosed(levelGroup)) return;
+    }
     placedOrderByKey.delete(key);
     removeRowByKey(key);
   }
@@ -2625,10 +3128,22 @@ function saveAndCloseSettingsPanel() {
         const k = inp.dataset.field;
         if (!k) continue;
         let val;
-        if (inp.type === 'checkbox') val = inp.checked;
+        if (inp.dataset.arrayMarker === '1') val = [];
+        else if (inp.type === 'checkbox') val = inp.checked;
         else if (inp.type === 'number') val = inp.value === '' ? null : Number(inp.value);
         else val = inp.value;
         setNested(data, k, val);
+      }
+      if (name === 'tick-sizes') {
+        const bySymbol = {};
+        for (const row of form.querySelectorAll('.tick-size-symbol-row')) {
+          const symbol = row.querySelector('input[data-role="symbol"]')?.value.trim();
+          const tickSize = Number(row.querySelector('input[data-role="tickSize"]')?.value);
+          if (symbol && Number.isFinite(tickSize) && tickSize > 0) {
+            bySymbol[symbol] = tickSize;
+          }
+        }
+        data.bySymbol = bySymbol;
       }
       ipcRenderer.invoke('settings:set', name, data).catch(() => {
       });
@@ -2645,6 +3160,10 @@ function saveAndCloseSettingsPanel() {
         const ms = Number(data.valuationRefreshMs);
         if (Number.isFinite(ms) && ms > 0) optionStratValuationRefreshMs = ms;
         optionStratDisplayFields = normalizeOptionStratDisplayFields(data.displayFields);
+        render();
+      }
+      if (name === 'level-order') {
+        levelOrderCfg = data || {};
         render();
       }
     }
@@ -2695,11 +3214,19 @@ if (typeof module !== 'undefined') {
     state,
     pendingByReqId,
     pendingIdByReqId,
+    levelOrderGroups,
+    levelOrderChildToGroup,
+    levelOrderPendingToGroup,
+    levelOrderTicketToGroup,
     retryCounts,
     cardStates,
     pendingExecLabels,
     placedOrderByKey,
+    instrumentInfo,
     settingsForms,
+    setLevelOrderConfig(config) {
+      levelOrderCfg = config || {};
+    },
     setOptionStratDisplayFields(fields) {
       optionStratDisplayFields = normalizeOptionStratDisplayFields(fields);
     },

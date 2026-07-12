@@ -1,0 +1,139 @@
+# Level Order
+
+Level Order creates custom "trade from level" cards and executes them through the normal provider routing path.
+
+## Commands
+
+```text
+levelOrder {ticker} {level}
+lo {ticker} {level}
+```
+
+The command creates a row with `cardType: "levelOrder"`, the normalized ticker, the level, `event: "levelOrder"`, and the current timestamp.
+
+Ticker normalization follows the existing command style: the base ticker is uppercased, while suffixes such as `.cfd` are preserved.
+
+Examples:
+
+```text
+levelOrder ADAUSDT.cfd 0.164
+lo ES.cfd 6500
+```
+
+## Settings
+
+The settings section is registered as `Level orders`.
+
+Config shape:
+
+```json
+{
+  "defaults": {
+    "riskUsd": 50,
+    "maxLot": 0,
+    "stopOffsetPts": 10,
+    "takeProfitPts": null
+  },
+  "symbols": []
+}
+```
+
+- `riskUsd`: total position risk in dollars across all child orders.
+- `maxLot`: max quantity for one child order. `0` disables splitting.
+- `stopOffsetPts`: stop offset from the level, in points.
+- `takeProfitPts`: optional take-profit distance in points. `null` or blank means no TP is sent.
+- `symbols`: ticker-specific overrides with the same fields plus `ticker`.
+
+Example:
+
+```json
+{
+  "symbols": [
+    {
+      "ticker": "ADAUSDT.cfd",
+      "riskUsd": 1,
+      "maxLot": 200,
+      "stopOffsetPts": 4,
+      "takeProfitPts": null
+    }
+  ]
+}
+```
+
+## Card
+
+A level-order card shows:
+
+- `Level`
+- `Risk $`
+- `Stop off`
+- `Max lot`
+- `TP pts`
+- `Pt`, a compact point-price override beside the ticker
+
+`Pt` is optional. When blank, the app uses the normal tick-size resolution path. When set, it overrides the point price for this card. For example, `Pt = 0.001` means `3` points equals `0.003`.
+
+Buttons:
+
+- `LB`: limit buy at current bid.
+- `LS`: limit sell at current bid.
+
+## Execution
+
+The renderer sends `level-order:place` to the main process. The main process runs the `limitBidTrade` flow:
+
+1. Resolve provider through regular execution routing.
+2. Get quote through `adapter.getQuote(symbol)`.
+3. Require a finite bid.
+4. For `LB`, reject when `bid < level`.
+5. For `LS`, reject when `bid > level`.
+6. Compute level distance in points: `abs(bid - level) / tickSize`.
+7. Add `stopOffsetPts` to get the full stop distance.
+8. Compute stop price:
+   - buy: `level - stopOffsetPts * tickSize`
+   - sell: `level + stopOffsetPts * tickSize`
+9. Size total quantity from `riskUsd` and full stop distance.
+10. Split total quantity by `maxLot` when `maxLot > 0`.
+11. Submit every child order through the existing `queue-place-order` normalization path.
+
+Each child order is a limit order at current bid. Metadata includes `strategy: "limitBidTrade"`, `strategyId`, `parentRequestId`, `childIndex`, `childCount`, and `fixedQty: true`.
+
+`fixedQty: true` prevents the normal order queue from resizing child orders again.
+
+## Stop And TP
+
+Protective orders are best-effort and provider-agnostic.
+
+The strategy passes stop points and optional TP points through the standard adapter contract. Adapters that support bracket/protective orders attach them. Adapters that only support basic orders keep their current behavior.
+
+When `takeProfitPts` is blank or null, TP is not sent to the provider.
+
+## Split Lifecycle
+
+Split level orders are treated as one logical card.
+
+The card stays in the pre-execution state while child orders are being accepted or confirmed. It must not transition to running after the first child result.
+
+For providers that emit reliable `position:opened` events, the renderer can move the card to running after all related child tickets are opened.
+
+For DWX/MT5-style providers, a filled group may appear as one aggregated terminal position rather than one position per child order. The main process starts a position monitor after all child orders are accepted by the adapter. The monitor polls `adapter.listOpenOrders()` and marks the card running only when:
+
+- the terminal position symbol matches the card ticker;
+- the terminal position size is at least the sum of all child quantities;
+- the terminal position identifiers/comment contain at least one cid or provider ticket from the child order group.
+
+This matches MT5 behavior where the open position comment may contain only one child order cid even though the position size includes the whole split group.
+
+The main process emits `level-order:positions-ready` when this predicate is satisfied.
+
+If the monitor times out, it logs `[LEVEL][POSITIONS_TIMEOUT]` with a visible terminal-position sample and the scan result.
+
+## Files
+
+- `app/services/levelOrder/command.js`: command parsing and row creation.
+- `app/services/levelOrder/strategy.js`: default resolution, sizing, stop math, and split math.
+- `app/services/levelOrder/manifest.js`: settings and command registration.
+- `app/main.js`: `level-order:place`, child submission, and terminal-position monitoring.
+- `app/renderer.js`: card UI, IPC payload, grouped child lifecycle, and status transitions.
+- `test/levelOrder.test.js`: command and strategy tests.
+- `test/levelOrderRenderer.test.js`: renderer/card lifecycle tests.

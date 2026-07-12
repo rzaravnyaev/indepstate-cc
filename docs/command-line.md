@@ -34,6 +34,17 @@ Creates a card from the latest TradingView horizontal line captured by the `tvLi
 
 When the TradingView payload includes the line identifier, the resulting card receives a `producingLineId` field matching that ID. Automation rules and manual commands can use the field to correlate cards with the TradingView objects that created them.
 
+### levelOrder (alias: lo)
+
+```
+levelOrder {ticker} {level}
+lo {ticker} {level}
+```
+
+Creates a level-order card for trading from a price level. The card exposes `LB` and `LS` buttons for limit buy / limit sell at current bid, sizes the full position from total risk, splits child orders by `maxLot`, and waits for the grouped position lifecycle before moving to running status.
+
+See [level-order.md](level-order.md) for settings and execution details.
+
 ### rm
 
 ```
