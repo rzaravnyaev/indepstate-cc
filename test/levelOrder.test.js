@@ -3,6 +3,7 @@ const { LevelOrderCommand, buildLevelOrderRow } = require('../app/services/level
 const {
   resolveLevelOrderDefaults,
   splitQuantity,
+  roundQtyToStep,
   calculateLimitBidTradePlan
 } = require('../app/services/levelOrder/strategy');
 
@@ -60,18 +61,20 @@ const orderCalculator = {
 
 (function testDefaults() {
   const cfg = {
-    defaults: { riskUsd: 50, maxLot: 0, stopOffsetPts: 10, takeProfitPts: null },
-    symbols: [{ ticker: 'SPX.cfd', riskUsd: 100, maxLot: 3, stopOffsetPts: 5, takeProfitPts: 30 }]
+    defaults: { riskUsd: 50, maxLot: 0, minLot: 1, stopOffsetPts: 10, takeProfitPts: null },
+    symbols: [{ ticker: 'SPX.cfd', riskUsd: 100, maxLot: 3, minLot: 0.01, stopOffsetPts: 5, takeProfitPts: 30 }]
   };
   assert.deepStrictEqual(resolveLevelOrderDefaults(cfg, 'SPX.cfd'), {
     riskUsd: 100,
     maxLot: 3,
+    minLot: 0.01,
     stopOffsetPts: 5,
     takeProfitPts: 30
   });
   assert.deepStrictEqual(resolveLevelOrderDefaults(cfg, 'AAPL'), {
     riskUsd: 50,
     maxLot: 0,
+    minLot: 1,
     stopOffsetPts: 10,
     takeProfitPts: null
   });
@@ -126,9 +129,33 @@ const orderCalculator = {
 })();
 
 (function testSplitRemainder() {
-  assert.deepStrictEqual(splitQuantity(12.3, 5, 'CX'), [5, 5, 2.3]);
-  assert.deepStrictEqual(splitQuantity(12.3, 0, 'CX'), [12.3]);
+  assert.strictEqual(roundQtyToStep(12.349, 0.01), 12.34);
+  assert.deepStrictEqual(splitQuantity(12.3, 5, 'CX'), [5, 5, 2]);
+  assert.deepStrictEqual(splitQuantity(12.3, 0, 'CX'), [12]);
+  assert.deepStrictEqual(splitQuantity(12.34, 5, 'CX', 0.01), [5, 5, 2.34]);
+  assert.deepStrictEqual(splitQuantity(12.34, 0, 'CX', 0.01), [12.34]);
   assert.deepStrictEqual(splitQuantity(12.3, 5, 'EQ'), [5, 5, 2]);
+})();
+
+(function testFractionalMinLotPlan() {
+  const plan = calculateLimitBidTradePlan({
+    action: 'LB',
+    ticker: 'TST',
+    instrumentType: 'EQ',
+    level: 100,
+    riskUsd: 100.03,
+    stopOffsetPts: 1,
+    maxLot: 50,
+    minLot: 0.01,
+    bid: 100,
+    tickSize: 1,
+    orderCalculator: {
+      qty() { return 100.03; }
+    }
+  });
+  assert.strictEqual(plan.ok, true);
+  assert.strictEqual(plan.minLot, 0.01);
+  assert.deepStrictEqual(plan.childQtys, [50, 50, 0.03]);
 })();
 
 console.log('levelOrder tests passed');

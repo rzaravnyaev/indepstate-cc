@@ -38,6 +38,7 @@ Config shape:
   "defaults": {
     "riskUsd": 50,
     "maxLot": 0,
+    "minLot": 1,
     "stopOffsetPts": 10,
     "takeProfitPts": null
   },
@@ -47,6 +48,7 @@ Config shape:
 
 - `riskUsd`: total position risk in dollars across all child orders.
 - `maxLot`: max quantity for one child order. `0` disables splitting.
+- `minLot`: minimum quantity step for sizing and split remainders. `1` keeps whole-number sizing; `0.01` allows quantities like `12.34`.
 - `stopOffsetPts`: stop offset from the level, in points.
 - `takeProfitPts`: optional take-profit distance in points. `null` or blank means no TP is sent.
 - `symbols`: ticker-specific overrides with the same fields plus `ticker`.
@@ -60,6 +62,7 @@ Example:
       "ticker": "ADAUSDT.cfd",
       "riskUsd": 1,
       "maxLot": 200,
+      "minLot": 0.01,
       "stopOffsetPts": 4,
       "takeProfitPts": null
     }
@@ -100,8 +103,9 @@ The renderer sends `level-order:place` to the main process. The main process run
    - buy: `level - stopOffsetPts * tickSize`
    - sell: `level + stopOffsetPts * tickSize`
 9. Size total quantity from `riskUsd` and full stop distance.
-10. Split total quantity by `maxLot` when `maxLot > 0`.
-11. Submit every child order through the existing `queue-place-order` normalization path.
+10. Round total quantity down to the configured `minLot` step.
+11. Split total quantity by `maxLot` when `maxLot > 0`, preserving the final remainder at the same `minLot` step.
+12. Submit every child order through the existing `queue-place-order` normalization path.
 
 Each child order is a limit order at current bid. Metadata includes `strategy: "limitBidTrade"`, `strategyId`, `parentRequestId`, `childIndex`, `childCount`, and `fixedQty: true`.
 

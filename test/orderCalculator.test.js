@@ -50,7 +50,11 @@ function testOrderCalculator() {
   const qtyCxApprox = calc.qty({ riskUsd: 15, stopPts: 35, tickSize: 0.0001, lot: 1, instrumentType: 'CX' });
   assert.ok(Math.abs(qtyCxApprox - 4285.714) < 0.01);
 
+  const qtyEqDefaultStep = calc.qty({ riskUsd: 10, stopPts: 609, tickSize: 0.025, lot: 1, instrumentType: 'EQ' });
+  assert.strictEqual(qtyEqDefaultStep, 0);
 
+  const qtyEqFractionalStep = calc.qty({ riskUsd: 10, stopPts: 609, tickSize: 0.025, lot: 1, instrumentType: 'EQ', quantityStep: 0.1 });
+  assert.strictEqual(qtyEqFractionalStep, 0.6);
 
   console.log('OrderCalculator tests passed!');
 }

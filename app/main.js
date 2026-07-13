@@ -19,6 +19,7 @@ const orderCalc = servicesApi.orderCalculator || require('./services/orderCalcul
 const { resolveTickSize } = require('./services/points');
 const { calculateLimitBidTradePlan } = require('./services/levelOrder/strategy');
 const { collectRetryStopEntries, getRetryStopParentIds } = require('./services/levelOrder/retryStop');
+const { normalizeOrderQty, isValidOrderQty } = require('./services/executionQuantity');
 const orderCardsCfg = loadConfig('../services/orderCards/config/order-cards.json');
 const uiCfg = loadConfig('../services/ui/config/ui.json');
 
@@ -572,9 +573,7 @@ function normalizeOrderPayload(payload) {
       side: payload.kind,            // 'BL'|'BSL'|'SL'|'SSL'
       type: payload.type,
       tickSize: payload.tickSize,
-      qty: instrumentType === 'EQ'
-        ? Math.floor(Number(payload.meta.qty || 0))
-        : Number(payload.meta.qty || 0),
+      qty: normalizeOrderQty(payload.meta.qty, instrumentType, payload.meta),
       price: Number(payload.price || 0),
       sl: Number(payload.meta.stopPts || 0),
       tp: payload.meta.takePts == null ? undefined : Number(payload.meta.takePts),
@@ -594,9 +593,7 @@ function normalizeOrderPayload(payload) {
     side: payload.side || payload.action, // 'BL'|'BSL'|'SL'|'SSL'
     type: payload.type,
     tickSize: payload.tickSize,
-    qty: instrumentType === 'EQ'
-      ? Math.floor(Number(payload.qty || 0))
-      : Number(payload.qty || 0),
+    qty: normalizeOrderQty(payload.qty, instrumentType, payload.meta),
     price: Number(payload.price || 0),
     sl: Number(payload.sl || 0),
     tp: payload.tp === '' || payload.tp == null ? undefined : Number(payload.tp),
@@ -623,8 +620,8 @@ function validateOrder(order) {
     const ok = (order.meta?.riskUsd > 0) && order.sl > 0 && order.price > 0 && order.qty > 0;
     return ok ? { ok: true } : { ok: false, reason: 'FX: riskUsd>0, sl>0, price>0, qty>0 required' };
   } else {
-    const ok = (order.meta?.riskUsd > 0) && order.sl > 0 && order.price > 0 && (order.qty >= 1);
-    return ok ? { ok: true } : { ok: false, reason: 'EQ: riskUsd>0, sl>0, price>0, qty>=1 required' };
+    const ok = (order.meta?.riskUsd > 0) && order.sl > 0 && order.price > 0 && isValidOrderQty(order.qty, order.instrumentType, order.meta);
+    return ok ? { ok: true } : { ok: false, reason: 'EQ: riskUsd>0, sl>0, price>0, valid qty required' };
   }
 }
 
@@ -1012,6 +1009,7 @@ function setupIpc(orderSvc) {
         riskUsd: payload.riskUsd,
         stopOffsetPts: payload.stopOffsetPts,
         maxLot: payload.maxLot,
+        minLot: payload.minLot,
         takeProfitPts: payload.takeProfitPts,
         bid,
         tickSize,
@@ -1050,6 +1048,8 @@ function setupIpc(orderSvc) {
             level: plan.level,
             bid: plan.bid,
             stopOffsetPts: plan.stopOffsetPts,
+            minLot: plan.minLot,
+            quantityStep: plan.minLot,
             pointSize: payload.pointSize,
             stopPrice: plan.stopPrice
           }

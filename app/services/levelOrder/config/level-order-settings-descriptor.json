@@ -13,6 +13,10 @@
         "type": "number",
         "description": "Default max lot per child order; 0 disables splitting"
       },
+      "minLot": {
+        "type": "number",
+        "description": "Default minimum lot/quantity step; 1 keeps whole-number sizing"
+      },
       "stopOffsetPts": {
         "type": "number",
         "description": "Default stop offset from level in points"
@@ -37,6 +41,10 @@
         "maxLot": {
           "type": "number",
           "description": "Max lot per child order; 0 disables splitting"
+        },
+        "minLot": {
+          "type": "number",
+          "description": "Minimum lot/quantity step; 1 keeps whole-number sizing"
         },
         "stopOffsetPts": {
           "type": "number",

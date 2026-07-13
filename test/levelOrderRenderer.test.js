@@ -89,6 +89,7 @@ async function run() {
   assert.strictEqual(call.payload.riskUsd, 50);
   assert.strictEqual(call.payload.stopOffsetPts, 4);
   assert.strictEqual(call.payload.maxLot, 3);
+  assert.strictEqual(call.payload.minLot, 1);
   assert.strictEqual(call.payload.takeProfitPts, 12);
   assert.strictEqual(call.payload.pointSize, 0.001);
   assert.strictEqual(call.payload.tickSize, 0.001);

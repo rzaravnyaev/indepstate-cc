@@ -1486,9 +1486,11 @@ function createLevelOrderBody(row, key, $pointSize) {
       const pointSizeOk = !$pointSize || $pointSize.value === '' || (Number.isFinite(pointSize) && pointSize > 0);
       const tick = pointSizeOk && Number.isFinite(pointSize) && pointSize > 0 ? pointSize : tickSize(row);
       const tickOk = Number.isFinite(tick) && tick > 0;
+      const minLot = Number(defaults.minLot);
+      const minLotOk = Number.isFinite(minLot) && minLot > 0;
       const tpOk = $tp.value === '' || (Number.isFinite(takeProfitPts) && takeProfitPts > 0);
       const maxLotOk = Number.isFinite(maxLot) && maxLot >= 0;
-      const valid = isPos(level) && isPos(risk) && isSL(stopOffsetPts) && maxLotOk && tpOk && pointSizeOk && bidOk && tickOk;
+      const valid = isPos(level) && isPos(risk) && isSL(stopOffsetPts) && maxLotOk && minLotOk && tpOk && pointSizeOk && bidOk && tickOk;
 
       line.classList.toggle('card--invalid', !valid);
       const setErr = (inp, bad) => inp.classList.toggle('input--error', !!bad);
@@ -1503,11 +1505,12 @@ function createLevelOrderBody(row, key, $pointSize) {
         : !isPos(risk) ? 'Risk $ > 0'
           : !isSL(stopOffsetPts) ? 'Stop offset pts > 0'
             : !maxLotOk ? 'Max lot >= 0'
-              : !tpOk ? 'TP pts > 0 or blank'
-                : !pointSizeOk ? 'Point price > 0 or blank'
-                  : !bidOk ? 'Bid quote required'
-                    : !tickOk ? 'Tick size required'
-                      : '';
+              : !minLotOk ? 'Min lot > 0'
+                : !tpOk ? 'TP pts > 0 or blank'
+                  : !pointSizeOk ? 'Point price > 0 or blank'
+                    : !bidOk ? 'Bid quote required'
+                      : !tickOk ? 'Tick size required'
+                        : '';
       if (this._btns) this._btns.querySelectorAll('button').forEach(b => {
         b.disabled = !valid;
         if (!valid) b.title = reason; else b.removeAttribute('title');
@@ -1524,6 +1527,7 @@ function createLevelOrderBody(row, key, $pointSize) {
         risk,
         stopOffsetPts,
         maxLot,
+        minLot,
         takeProfitPts: $tp.value === '' ? null : takeProfitPts,
         pointSize: $pointSize && $pointSize.value !== '' ? pointSize : null,
         tickSize: tick
@@ -2658,6 +2662,7 @@ async function placeLevelOrder(kind, row, v, instrumentType, btnLabel) {
       riskUsd: v.risk,
       stopOffsetPts: v.stopOffsetPts,
       maxLot: v.maxLot,
+      minLot: v.minLot,
       takeProfitPts: v.takeProfitPts,
       pointSize: v.pointSize,
       tickSize: v.tickSize,

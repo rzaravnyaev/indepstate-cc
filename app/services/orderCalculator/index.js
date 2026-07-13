@@ -37,24 +37,30 @@ class OrderCalculator {
   }
 
   // Calculate position size from risk in USD
-  qty({ riskUsd, stopPts, tickSize, lot = 1, instrumentType }) {
+  qty({ riskUsd, stopPts, tickSize, lot = 1, instrumentType, quantityStep }) {
     if (Number.isFinite(riskUsd) && riskUsd > 0 && Number.isFinite(stopPts) && stopPts > 0) {
       const tick = Number(tickSize);
+      const step = Number(quantityStep);
+      const stepOr = fallback => (Number.isFinite(step) && step > 0 ? step : fallback);
+      const floorToStep = (value, fallbackStep) => {
+        const s = stepOr(fallbackStep);
+        return Math.floor(value / s) * s;
+      };
       let q;
       if (instrumentType === 'FX') {
         const safeTick = Number.isFinite(tick) && tick > 0 ? tick : 1;
         const lotSize = Number(lot) || 100000;
-        q = Math.floor((riskUsd / safeTick) / stopPts / lotSize / 0.01) * 0.01;
+        q = floorToStep((riskUsd / safeTick) / stopPts / lotSize, 0.01);
       } else if (instrumentType === 'CX') {
         if (!Number.isFinite(tick) || tick <= 0) return 0;
         const lotSize = Number(lot) || 1;
-        q = Math.floor((riskUsd / tick) / stopPts / lotSize / 0.001) * 0.001;
+        q = floorToStep((riskUsd / tick) / stopPts / lotSize, 0.001);
       } else {
         const safeTick = Number.isFinite(tick) && tick > 0 ? tick : 1;
-        q = Math.floor((riskUsd / safeTick) / stopPts);
+        q = floorToStep((riskUsd / safeTick) / stopPts, 1);
       }
       if (!Number.isFinite(q) || q < 0) q = 0;
-      return q;
+      return Number(q.toFixed(10));
     }
     return 0;
   }
