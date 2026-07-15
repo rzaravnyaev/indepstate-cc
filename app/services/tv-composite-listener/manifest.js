@@ -6,24 +6,6 @@ function cloneActivity(value) {
   return value && typeof value === 'object' ? { ...value } : null;
 }
 
-function decimalPlaces(value) {
-  const raw = String(value ?? '').trim().toLowerCase();
-  if (!raw) return 0;
-  const [mantissa, exponentRaw] = raw.split('e');
-  const decimals = mantissa.includes('.') ? mantissa.split('.')[1].length : 0;
-  const exponent = Number(exponentRaw || 0);
-  return Math.max(0, decimals - exponent);
-}
-
-function distance(a, b) {
-  const left = Number(a);
-  const right = Number(b);
-  if (!Number.isFinite(left) || !Number.isFinite(right)) return null;
-  const places = Math.min(Math.max(decimalPlaces(a), decimalPlaces(b)), 12);
-  const factor = 10 ** places;
-  return Math.abs(Math.round(left * factor) - Math.round(right * factor)) / factor;
-}
-
 function initService(servicesApi = {}) {
   const api = servicesApi.tvCompositeListener = servicesApi.tvCompositeListener || {};
   const actionBus = servicesApi.actionBus;
@@ -54,7 +36,6 @@ function initService(servicesApi = {}) {
     const state = normalized ? stateBySymbol.get(normalized) : null;
     if (!state?.line || !state?.ray || !actionBus || typeof actionBus.emit !== 'function') return;
     const { line, ray } = state;
-    const gap = distance(line.price, ray.rayPrice);
     actionBus.emit('tv-tool-horzline-ray', {
       symbol: line.symbol,
       price: line.price,
@@ -62,7 +43,6 @@ function initService(servicesApi = {}) {
       lineId: line.lineId,
       rayPrice: ray.rayPrice,
       rayId: ray.rayId,
-      distance: gap,
       lineServerUpdateTime: line.serverUpdateTime,
       rayServerUpdateTime: ray.serverUpdateTime
     });
@@ -110,4 +90,4 @@ function initService(servicesApi = {}) {
   }
 }
 
-module.exports = { initService, distance };
+module.exports = { initService };

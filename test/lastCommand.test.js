@@ -67,7 +67,6 @@ function run() {
         lineId: 'foo',
         rayPrice: 1.35,
         rayId: 'ray1',
-        distance: 0.15,
         lineServerUpdateTime: 1000,
         rayServerUpdateTime: 2000
       }
