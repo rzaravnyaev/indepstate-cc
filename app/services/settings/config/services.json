@@ -22,7 +22,7 @@
   "services/actions-bus",
   "services/tvProxy",
   "services/tvListener",
-  "services/tv-composite-listener",
+  "services/tvArrgegatorListener",
   "services/optionstrat",
   "services/commandLine",
   "services/ui",
