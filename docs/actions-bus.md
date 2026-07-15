@@ -69,6 +69,8 @@ Function arguments are resolved from payload placeholders before invocation. The
 `dist(a, b)` helper converts both arguments to numbers and returns their absolute price difference.
 `distPts(a, b)` converts that absolute price difference to points using the points/tick-size service and
 the action payload symbol, which is useful for templates such as `stopOffsetPts:distPts({price},{rayPrice})`.
+`distPtsPlus(a, b, extra)` does the same conversion and adds an extra point value in one direct helper
+call, avoiding unsupported nested expressions.
 
 The expression layer is intentionally small: it supports direct calls such as
 `functionName({field})` or `functionName({a}, {b})`. It does not execute JavaScript and does not

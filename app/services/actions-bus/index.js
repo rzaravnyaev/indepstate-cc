@@ -58,6 +58,13 @@ function distPts(a, b, payload = {}) {
   return Number.isFinite(pts) ? pts : '';
 }
 
+function distPtsPlus(a, b, extra, payload = {}) {
+  const pts = Number(distPts(a, b, payload));
+  const extraPts = Number(extra);
+  if (!Number.isFinite(pts) || !Number.isFinite(extraPts)) return '';
+  return add(pts, extraPts);
+}
+
 function createActionsBus(opts = {}) {
   const emitter = new EventEmitter();
   const namedStates = new Map(); // name -> { enabled, label }
@@ -76,6 +83,7 @@ function createActionsBus(opts = {}) {
   registerActionFunction('add', add);
   registerActionFunction('dist', dist);
   registerActionFunction('distPts', distPts);
+  registerActionFunction('distPtsPlus', distPtsPlus);
 
   function getRunnerKey(name) {
     return typeof name === 'string' && name.trim()
@@ -403,4 +411,4 @@ function createActionsBus(opts = {}) {
   };
 }
 
-module.exports = { createActionsBus, stripSymbol, add, dist, distPts };
+module.exports = { createActionsBus, stripSymbol, add, dist, distPts, distPtsPlus };
