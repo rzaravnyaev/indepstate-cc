@@ -7,7 +7,7 @@ function cloneActivity(value) {
 }
 
 function initService(servicesApi = {}) {
-  const api = servicesApi.tvArrgegatorListener = servicesApi.tvArrgegatorListener || {};
+  const api = servicesApi.tvAggregatorListener = servicesApi.tvAggregatorListener || {};
   const actionBus = servicesApi.actionBus;
   const stateBySymbol = new Map();
 
