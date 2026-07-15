@@ -1,6 +1,6 @@
 const assert = require('assert');
 const manifest = require('../app/services/tvListener/manifest');
-const aggregatorManifest = require('../app/services/tvArrgegatorListener/manifest');
+const aggregatorManifest = require('../app/services/tvAggregatorListener/manifest');
 const { createActionsBus } = require('../app/services/actions-bus');
 const { createCommandService } = require('../app/services/commandLine');
 
@@ -32,7 +32,7 @@ function run() {
     payload: { symbol: 'NYSE:AAA', price: 1.5, toolType: 'LineToolHorzLine', lineId: 'foo', serverUpdateTime: 1000 }
   }]);
   assert.deepStrictEqual(api.tvListener.getLastActivity(), { symbol: 'NYSE:AAA', price: 1.5, lineId: 'foo' });
-  assert.deepStrictEqual(api.tvArrgegatorListener.getState('NYSE:AAA').line, {
+  assert.deepStrictEqual(api.tvAggregatorListener.getState('NYSE:AAA').line, {
     symbol: 'NYSE:AAA', price: 1.5, toolType: 'LineToolHorzLine', lineId: 'foo', serverUpdateTime: 1000
   });
 
@@ -50,7 +50,7 @@ function run() {
   });
 
   assert.deepStrictEqual(api.tvListener.getLastActivity(), { symbol: 'NYSE:AAA', price: 1.5, lineId: 'foo' });
-  assert.deepStrictEqual(api.tvArrgegatorListener.getState('NYSE:AAA').ray, {
+  assert.deepStrictEqual(api.tvAggregatorListener.getState('NYSE:AAA').ray, {
     symbol: 'NYSE:AAA', rayPrice: 1.35, price: 1.35, toolType: 'LineToolHorzRay', rayId: 'ray1', serverUpdateTime: 2000
   });
   assert.deepStrictEqual(emitted.slice(1), [
@@ -88,8 +88,8 @@ function run() {
   });
   assert.strictEqual(emitted.length, beforeDifferentSymbol + 1);
   assert.strictEqual(emitted[emitted.length - 1].event, 'tv-tool-horzray');
-  assert.deepStrictEqual(api.tvArrgegatorListener.getState('NYSE:BBB').line, null);
-  assert.strictEqual(api.tvArrgegatorListener.getState('NYSE:BBB').ray.rayPrice, 2.25);
+  assert.deepStrictEqual(api.tvAggregatorListener.getState('NYSE:BBB').line, null);
+  assert.strictEqual(api.tvAggregatorListener.getState('NYSE:BBB').ray.rayPrice, 2.25);
 
   api.tvProxy.fn({ event: 'http_request', text: JSON.stringify({ sources: { foo: null, ray1: null } }) });
   assert.deepStrictEqual(emitted.slice(-2), [
