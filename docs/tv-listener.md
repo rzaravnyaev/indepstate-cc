@@ -2,7 +2,7 @@
 
 The `tv-listener` service subscribes to TradingView traffic exposed by the `tv-proxy` service. It
 parses horizontal line updates from `LineToolHorzLine` payloads and horizontal ray updates
-from `LineToolHorzRay` payloads. The listener emits one action-bus event per drawing update and keeps only the latest horizontal line for the `last` command. The `tv-composite-listener` service stores line/ray state separately per symbol for automation.
+from `LineToolHorzRay` payloads. The listener emits one action-bus event per drawing update and keeps only the latest horizontal line for the `last` command. The `tvArrgegatorListener` service stores line/ray state separately per symbol for automation.
 
 ## Configuration
 
@@ -48,7 +48,7 @@ To create a Level Order card from a new horizontal line, bind the event through 
 
 
 
-The separate `tv-composite-listener` service listens to `tv-tool-horzline` and `tv-tool-horzray`. When it has both a latest horizontal line and a latest horizontal ray for the same symbol,
+The separate `tvArrgegatorListener` service listens to `tv-tool-horzline` and `tv-tool-horzray`. When it has both a latest horizontal line and a latest horizontal ray for the same symbol,
 it emits the composite `tv-tool-horzline-ray` event. This event is designed for action-bus templates
 that need both values at once:
 
