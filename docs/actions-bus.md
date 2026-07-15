@@ -65,6 +65,7 @@ Command templates can call small registered helper functions:
 Function arguments are resolved from payload placeholders before invocation. The built-in
 `stripSymbol(value)` helper trims a TradingView-style symbol and removes the exchange prefix before
 `:`, so `NYSE:AAA` becomes `AAA`; symbols without a prefix pass through unchanged. The built-in
+`add(a, b, ...)` helper converts arguments to numbers and returns a precision-stable sum. The built-in
 `dist(a, b)` helper converts both arguments to numbers and returns their absolute price difference.
 `distPts(a, b)` converts that absolute price difference to points using the points/tick-size service and
 the action payload symbol, which is useful for templates such as `stopOffsetPts:distPts({price},{rayPrice})`.

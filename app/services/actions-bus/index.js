@@ -29,12 +29,24 @@ function decimalPlaces(value) {
   return Math.max(0, decimals - exponent);
 }
 
+function decimalFactor(values) {
+  const places = Math.min(Math.max(...values.map(decimalPlaces)), 12);
+  return 10 ** places;
+}
+
+function add(...values) {
+  while (values.length && typeof values[values.length - 1] === 'object') values.pop();
+  const nums = values.map(Number);
+  if (!nums.length || nums.some((n) => !Number.isFinite(n))) return '';
+  const factor = decimalFactor(values);
+  return nums.reduce((sum, n) => sum + Math.round(n * factor), 0) / factor;
+}
+
 function dist(a, b) {
   const left = Number(a);
   const right = Number(b);
   if (!Number.isFinite(left) || !Number.isFinite(right)) return '';
-  const places = Math.min(Math.max(decimalPlaces(a), decimalPlaces(b)), 12);
-  const factor = 10 ** places;
+  const factor = decimalFactor([a, b]);
   return Math.abs(Math.round(left * factor) - Math.round(right * factor)) / factor;
 }
 
@@ -61,6 +73,7 @@ function createActionsBus(opts = {}) {
   const onError = typeof opts.onError === 'function' ? opts.onError : null;
 
   registerActionFunction('stripSymbol', stripSymbol);
+  registerActionFunction('add', add);
   registerActionFunction('dist', dist);
   registerActionFunction('distPts', distPts);
 
@@ -390,4 +403,4 @@ function createActionsBus(opts = {}) {
   };
 }
 
-module.exports = { createActionsBus, stripSymbol, dist, distPts };
+module.exports = { createActionsBus, stripSymbol, add, dist, distPts };

@@ -22,6 +22,7 @@ function run() {
         { event: 'plain', action: 'commandLine:plain stripSymbol({symbol})' },
         { event: 'custom', action: 'commandLine:custom joinSymbolLevel({symbol}, {price})' },
         { event: 'ray', action: 'commandLine:lo stripSymbol({symbol}) {price} props=stopOffsetPts:dist({price},{rayPrice});stopOffsetTicks:distPts({price},{rayPrice});producingLineId:{lineId}' },
+        { event: 'add-helper', action: 'commandLine:add-helper add({price},{offset}, {extra})' },
         { event: 'unknown-fn', action: 'commandLine:unknown missingFn({symbol}) keep-going' }
       ]
     },
@@ -38,6 +39,7 @@ function run() {
   bus.emit('plain', { symbol: 'ES.cfd' });
   bus.emit('custom', { symbol: 'AAA', price: 1.23 });
   bus.emit('ray', { symbol: 'NYSE:AAA', price: 1.5, rayPrice: 1.35, lineId: 'foo' });
+  bus.emit('add-helper', { price: 1.5, offset: 0.15, extra: 0.2 });
   bus.emit('unknown-fn', { symbol: 'AAA' });
   assert.deepStrictEqual(executed, []);
   assert.deepStrictEqual(errors, ['Unknown action function: missingFn']);
@@ -63,6 +65,7 @@ function run() {
     'cli:plain ES.cfd',
     'cli:custom AAA@1.23',
     'cli:lo AAA 1.5 props=stopOffsetPts:0.15;stopOffsetTicks:15;producingLineId:foo',
+    'cli:add-helper 1.85',
     'cli:unknown  keep-going',
     'cli:no-prefix-run',
     'other:always-run'
@@ -79,6 +82,7 @@ function run() {
     'cli:plain ES.cfd',
     'cli:custom AAA@1.23',
     'cli:lo AAA 1.5 props=stopOffsetPts:0.15;stopOffsetTicks:15;producingLineId:foo',
+    'cli:add-helper 1.85',
     'cli:unknown  keep-going',
     'cli:no-prefix-run',
     'other:always-run',
@@ -99,6 +103,7 @@ function run() {
     'cli:plain ES.cfd',
     'cli:custom AAA@1.23',
     'cli:lo AAA 1.5 props=stopOffsetPts:0.15;stopOffsetTicks:15;producingLineId:foo',
+    'cli:add-helper 1.85',
     'cli:unknown  keep-going',
     'cli:no-prefix-run',
     'other:always-run',
@@ -122,6 +127,7 @@ function run() {
   assert.deepStrictEqual(named, [{ name: 'Second', label: 'Second', enabled: true }]);
   assert.strictEqual(bus.getActionState('Foo action'), undefined);
   assert.ok(bus.listActionFunctions().includes('stripSymbol'));
+  assert.ok(bus.listActionFunctions().includes('add'));
   assert.ok(bus.listActionFunctions().includes('joinSymbolLevel'));
   assert.strictEqual(bus.unregisterActionFunction('joinSymbolLevel'), true);
   assert.ok(!bus.listActionFunctions().includes('joinSymbolLevel'));
