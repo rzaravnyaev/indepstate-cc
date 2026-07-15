@@ -18,6 +18,8 @@ function stripSymbol(value) {
   return colonIndex >= 0 ? raw.slice(colonIndex + 1).trim() : raw;
 }
 
+// Keep dist() stable for decimal prices: Math.abs(1.5 - 1.35) would otherwise
+// produce 0.1499999999999999, which breaks command templates and point conversion.
 function decimalPlaces(value) {
   const raw = String(value ?? '').trim().toLowerCase();
   if (!raw) return 0;
