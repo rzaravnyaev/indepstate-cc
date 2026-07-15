@@ -59,7 +59,7 @@ that need both values at once:
 }
 ```
 
-The composite payload includes `{ symbol, price, linePrice, lineId?, rayPrice, rayId?, distance,
+The composite payload includes `{ symbol, price, linePrice, lineId?, rayPrice, rayId?,
 lineServerUpdateTime?, rayServerUpdateTime? }`. `{price}` and `{linePrice}` both refer to the
 horizontal line level; `{rayPrice}` refers to the horizontal ray level. State is keyed by the full
 TradingView symbol, so rays from another symbol do not combine with the current line.
