@@ -19,7 +19,20 @@ function initService(servicesApi = {}) {
   const tvApi = servicesApi.tvListener = servicesApi.tvListener || {};
 
   let lastActivity = null;
+  const toolTypeById = new Map();
+
   tvApi.getLastActivity = () => lastActivity;
+
+  function normalizeSymbol(value) {
+    return typeof value === 'string' ? value.trim() : '';
+  }
+
+  function emitAction(event, payload) {
+    if (servicesApi.actionBus && typeof servicesApi.actionBus.emit === 'function') {
+      servicesApi.actionBus.emit(event, payload);
+    }
+  }
+
 
   let cfg = {};
   try {
@@ -40,21 +53,37 @@ function initService(servicesApi = {}) {
         if (!sources || typeof sources !== 'object') return;
 
         Object.entries(sources).forEach(([sourceId, src]) => {
-          const lineId = sourceId != null && sourceId !== '' ? String(sourceId) : null;
+          const sourceKey = sourceId != null && sourceId !== '' ? String(sourceId) : null;
           if (src && src.state?.type === 'LineToolHorzLine') {
-            const symbol = src.symbol;
+            const symbol = normalizeSymbol(src.symbol);
             const price = Number(src.state?.points?.[0]?.price);
             if (symbol && Number.isFinite(price)) {
-              const payload = { symbol, price };
-              if (lineId) payload.lineId = lineId;
-              lastActivity = payload;
-              if (servicesApi.actionBus && typeof servicesApi.actionBus.emit === 'function') {
-                servicesApi.actionBus.emit('tv-tool-horzline', payload);
-              }
+              const payload = { symbol, price, toolType: 'LineToolHorzLine' };
+              if (sourceKey) payload.lineId = sourceKey;
+              if (Number.isFinite(Number(src.serverUpdateTime))) payload.serverUpdateTime = Number(src.serverUpdateTime);
+              if (sourceKey) toolTypeById.set(sourceKey, { type: 'line' });
+              lastActivity = { symbol, price };
+              if (sourceKey) lastActivity.lineId = sourceKey;
+              emitAction('tv-tool-horzline', payload);
             }
-          } else if (src === null && lineId) {
-            if (servicesApi.actionBus && typeof servicesApi.actionBus.emit === 'function') {
-              servicesApi.actionBus.emit('tv-tool-horzline-remove', { lineId });
+          } else if (src && src.state?.type === 'LineToolHorzRay') {
+            const symbol = normalizeSymbol(src.symbol);
+            const rayPrice = Number(src.state?.points?.[0]?.price);
+            if (symbol && Number.isFinite(rayPrice)) {
+              const payload = { symbol, rayPrice, price: rayPrice, toolType: 'LineToolHorzRay' };
+              if (sourceKey) payload.rayId = sourceKey;
+              if (Number.isFinite(Number(src.serverUpdateTime))) payload.serverUpdateTime = Number(src.serverUpdateTime);
+              if (sourceKey) toolTypeById.set(sourceKey, { type: 'ray' });
+              emitAction('tv-tool-horzray', payload);
+            }
+          } else if (src === null && sourceKey) {
+            const known = toolTypeById.get(sourceKey);
+            if (known?.type === 'ray') {
+              toolTypeById.delete(sourceKey);
+              emitAction('tv-tool-horzray-remove', { rayId: sourceKey });
+            } else {
+              toolTypeById.delete(sourceKey);
+              emitAction('tv-tool-horzline-remove', { lineId: sourceKey });
             }
           }
         });
