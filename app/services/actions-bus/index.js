@@ -64,7 +64,7 @@ function distPts(a, b, payload = {}) {
   const gap = dist(a, b);
   if (gap === '') return '';
   const symbol = stripSymbol(payload?.symbol);
-  const pts = points.toPoints(null, symbol, gap, undefined, String(gap));
+  const pts = points.toPoints(null, symbol, gap, undefined, String(gap), false);
   return Number.isFinite(pts) ? pts : '';
 }
 
