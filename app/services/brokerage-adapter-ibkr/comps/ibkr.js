@@ -621,16 +621,68 @@ class IBKRAdapter extends ExecutionAdapter {
     const key = String(reqId);
     const rec = this.quoteRequests.get(key);
     if (!rec) return;
-    clearTimeout(rec.timer);
+    if (quote) {
+      const waiters = rec.waiters || [];
+      if (!waiters.length) return;
+      this.#log('info', 'quote resolved', { provider: this.provider, reqId: Number(key), symbol: rec.symbol, price: quote.price, bid: quote.bid, ask: quote.ask, last: quote.last, close: quote.close, tickSize: quote.tickSize });
+      rec.waiters = [];
+      for (const waiter of waiters) {
+        clearTimeout(waiter.timer);
+        waiter.resolve(quote);
+      }
+    } else {
+      this.#closeQuoteStream(key, reason);
+    }
+  }
+
+  #closeQuoteStream(reqId, reason = 'closed', { cancel = true, resolveWaiters = true } = {}) {
+    const key = String(reqId);
+    const rec = this.quoteRequests.get(key);
+    if (!rec) return;
     this.quoteRequests.delete(key);
     if (this.quoteRequestsBySymbol.get(rec.symbol) === key) this.quoteRequestsBySymbol.delete(rec.symbol);
-    this.#cancelQuoteRequest(key);
-    if (quote) {
-      this.#log('info', 'quote resolved', { provider: this.provider, reqId: Number(key), symbol: rec.symbol, price: quote.price, bid: quote.bid, ask: quote.ask, last: quote.last, close: quote.close, tickSize: quote.tickSize });
-      rec.resolve(quote);
-    } else {
-      this.#log(reason === 'timeout' ? 'error' : 'error', reason === 'timeout' ? 'quote timeout' : 'quote unavailable', { provider: this.provider, reqId: Number(key), symbol: rec.symbol, reason });
-      rec.resolve(null);
+    if (cancel) this.#cancelQuoteRequest(key);
+    if (resolveWaiters) {
+      for (const waiter of rec.waiters || []) {
+        clearTimeout(waiter.timer);
+        waiter.resolve(null);
+      }
+      rec.waiters = [];
+    }
+    this.#log(reason === 'timeout' ? 'error' : 'error', reason === 'timeout' ? 'quote timeout' : 'quote unavailable', { provider: this.provider, reqId: Number(key), symbol: rec.symbol, reason });
+  }
+
+  #waitForQuote(reqId) {
+    const key = String(reqId);
+    const rec = this.quoteRequests.get(key);
+    if (!rec) return Promise.resolve(null);
+    const quote = this.#normalizedQuote(rec);
+    if (quote) return Promise.resolve(quote);
+    return new Promise(resolve => {
+      const waiter = { resolve, timer: null };
+      waiter.timer = setTimeout(() => {
+        const live = this.quoteRequests.get(key);
+        if (!live) {
+          resolve(null);
+          return;
+        }
+        live.waiters = (live.waiters || []).filter(w => w !== waiter);
+        this.#log('error', 'quote timeout', { provider: this.provider, reqId: Number(key), symbol: live.symbol, reason: 'timeout' });
+        resolve(null);
+      }, this.cfg.quoteTimeoutMs);
+      rec.waiters.push(waiter);
+    });
+  }
+
+  #startQuoteStream(reqId, rec) {
+    const key = String(reqId);
+    this.quoteRequests.set(key, rec);
+    this.quoteRequestsBySymbol.set(rec.symbol, key);
+    try {
+      this.client.reqMktData(reqId, rec.contract, '', this.cfg.snapshotQuotes === true, false, []);
+    } catch (err) {
+      this.#log('error', 'reqMktData failed', { provider: this.provider, reqId, symbol: rec.symbol, message: err?.message || String(err) });
+      this.#closeQuoteStream(key, 'request-error');
     }
   }
 
@@ -658,7 +710,8 @@ class IBKRAdapter extends ExecutionAdapter {
     const rec = this.quoteRequests.get(key);
     if (!rec) return;
     const quote = this.#normalizedQuote(rec);
-    this.#resolveQuote(key, quote, quote ? 'snapshot-end' : 'snapshot-end-no-price');
+    if (quote) this.#resolveQuote(key, quote, 'snapshot-end');
+    if (rec.raw?.snapshot) this.#closeQuoteStream(key, quote ? 'snapshot-end' : 'snapshot-end-no-price', { cancel: false, resolveWaiters: !quote });
   }
 
   allocateOrderId() {
@@ -766,7 +819,7 @@ class IBKRAdapter extends ExecutionAdapter {
     }
 
     const existingReqId = this.quoteRequestsBySymbol.get(key);
-    if (existingReqId) this.#resolveQuote(existingReqId, null, 'superseded');
+    if (existingReqId) return this.#waitForQuote(existingReqId);
 
     const reqId = this.#allocateQuoteReqId();
     const reqKey = String(reqId);
@@ -782,30 +835,20 @@ class IBKRAdapter extends ExecutionAdapter {
       }
     }
 
-    return new Promise(resolve => {
-      const timer = setTimeout(() => this.#resolveQuote(reqKey, null, 'timeout'), this.cfg.quoteTimeoutMs);
-      this.quoteRequests.set(reqKey, {
-        reqId,
-        symbol: key,
-        contract,
-        tickSize,
-        quote: {},
-        raw: { tickPrice: [], tickSize: [], marketDataType, snapshot: this.cfg.snapshotQuotes === true },
-        resolve,
-        timer,
-      });
-      this.quoteRequestsBySymbol.set(key, reqKey);
-      try {
-        this.client.reqMktData(reqId, contract, '', this.cfg.snapshotQuotes === true, false, []);
-      } catch (err) {
-        this.#log('error', 'reqMktData failed', { provider: this.provider, reqId, symbol: key, message: err?.message || String(err) });
-        this.#resolveQuote(reqKey, null, 'request-error');
-      }
+    this.#startQuoteStream(reqId, {
+      reqId,
+      symbol: key,
+      contract,
+      tickSize,
+      quote: {},
+      raw: { tickPrice: [], tickSize: [], marketDataType, snapshot: this.cfg.snapshotQuotes === true },
+      waiters: [],
     });
+    return this.#waitForQuote(reqKey);
   }
 
   async forgetQuote(symbol) {
-    const key = normalizeString(symbol);
+    const key = normalizeString(symbol).toUpperCase();
     const reqId = this.quoteRequestsBySymbol.get(key);
     if (reqId) this.#resolveQuote(reqId, null, 'forgotten');
   }

@@ -25,6 +25,7 @@ class FakeClient extends EventEmitter {
   reqContractDetails(reqId, contract) { this.contractDetailsRequests.push({ reqId, contract }); }
   reqMarketDataType(type) { this.marketDataTypes.push(type); }
   reqMktData(reqId, contract, genericTickList, snapshot, regulatorySnapshot, options) {
+    if (this.failMktData) throw new Error(this.failMktData);
     this.marketDataRequests.push({ reqId, contract, genericTickList, snapshot, regulatorySnapshot, options });
   }
   cancelMktData(reqId) { this.cancelledMarketData.push(reqId); }
@@ -191,6 +192,8 @@ function ready(adapter, client, nextId = 100) {
     ready(adapter, client, 91);
     const promise = adapter.getQuote('AAPL');
     await Promise.resolve();
+    const promise2 = adapter.getQuote('AAPL');
+    await Promise.resolve();
     assert.strictEqual(client.marketDataTypes[0], 3);
     assert.strictEqual(client.marketDataRequests.length, 1);
     assert.strictEqual(client.marketDataRequests[0].contract.conId, 265598);
@@ -198,12 +201,14 @@ function ready(adapter, client, nextId = 100) {
     client.emit('tickPrice', client.marketDataRequests[0].reqId, 1, 100);
     client.emit('tickPrice', client.marketDataRequests[0].reqId, 2, 101);
     const quote = await promise;
+    const quote2 = await promise2;
     assert.strictEqual(quote.price, 100.5);
     assert.strictEqual(quote.bid, 100);
     assert.strictEqual(quote.ask, 101);
+    assert.strictEqual(quote2.price, 100.5);
     assert.strictEqual(quote.tickSize, 0.01);
     assert.strictEqual(quote.tickSource, 'ibkr');
-    assert.deepStrictEqual(client.cancelledMarketData, [client.marketDataRequests[0].reqId]);
+    assert.deepStrictEqual(client.cancelledMarketData, []);
   }
 
   {
@@ -221,6 +226,7 @@ function ready(adapter, client, nextId = 100) {
     const quote = await promise;
     assert.strictEqual(quote.price, 32.5);
     assert.strictEqual(quote.tickSize, 0.01);
+    assert.deepStrictEqual(client.cancelledMarketData, []);
   }
 
   {
@@ -232,6 +238,18 @@ function ready(adapter, client, nextId = 100) {
     const quote = await promise;
     assert.strictEqual(quote.price, 102.25);
     assert.strictEqual(quote.last, 102.25);
+    assert.deepStrictEqual(client.cancelledMarketData, []);
+
+    client.emit('tickPrice', client.marketDataRequests[0].reqId, 1, 102);
+    client.emit('tickPrice', client.marketDataRequests[0].reqId, 2, 103);
+    const updated = await adapter.getQuote('AAPL');
+    assert.strictEqual(client.marketDataRequests.length, 1);
+    assert.strictEqual(updated.price, 102.5);
+    assert.strictEqual(updated.bid, 102);
+    assert.strictEqual(updated.ask, 103);
+
+    await adapter.forgetQuote('aapl');
+    assert.deepStrictEqual(client.cancelledMarketData, [client.marketDataRequests[0].reqId]);
   }
 
   {
@@ -243,6 +261,7 @@ function ready(adapter, client, nextId = 100) {
     const quote = await promise;
     assert.strictEqual(quote.price, 99.75);
     assert.strictEqual(quote.close, 99.75);
+    assert.deepStrictEqual(client.cancelledMarketData, []);
   }
 
   {
@@ -250,8 +269,26 @@ function ready(adapter, client, nextId = 100) {
     ready(adapter, client, 94);
     const quote = await adapter.getQuote('AAPL');
     assert.strictEqual(quote, null);
-    assert.deepStrictEqual(client.cancelledMarketData, [client.marketDataRequests[0].reqId]);
+    assert.deepStrictEqual(client.cancelledMarketData, []);
     assert(adapter.logs.some(entry => entry.message === 'quote timeout'));
+
+    client.emit('tickPrice', client.marketDataRequests[0].reqId, 4, 102.25);
+    const late = await adapter.getQuote('AAPL');
+    assert.strictEqual(client.marketDataRequests.length, 1);
+    assert.strictEqual(late.price, 102.25);
+    await adapter.forgetQuote('AAPL');
+    assert.deepStrictEqual(client.cancelledMarketData, [client.marketDataRequests[0].reqId]);
+  }
+
+  {
+    const { adapter, client } = makeAdapter({ quoteTimeoutMs: 2000 });
+    ready(adapter, client, 94);
+    const promise = adapter.getQuote('AAPL');
+    await Promise.resolve();
+    await adapter.forgetQuote('AAPL');
+    const quote = await promise;
+    assert.strictEqual(quote, null);
+    assert.deepStrictEqual(client.cancelledMarketData, [client.marketDataRequests[0].reqId]);
   }
 
   {
@@ -262,7 +299,26 @@ function ready(adapter, client, nextId = 100) {
     client.emit('error', new Error('No market data permissions'), 354, client.marketDataRequests[0].reqId);
     const quote = await promise;
     assert.strictEqual(quote, null);
+    assert.deepStrictEqual(client.cancelledMarketData, [client.marketDataRequests[0].reqId]);
     assert(adapter.logs.some(entry => entry.message === 'IBKR market data subscription missing or unavailable'));
+
+    const retry = adapter.getQuote('AAPL');
+    await Promise.resolve();
+    assert.strictEqual(client.marketDataRequests.length, 2);
+    client.emit('tickPrice', client.marketDataRequests[1].reqId, 4, 103.5);
+    const retryQuote = await retry;
+    assert.strictEqual(retryQuote.price, 103.5);
+  }
+
+  {
+    const { adapter, client } = makeAdapter();
+    ready(adapter, client, 96);
+    client.failMktData = 'boom';
+    const quote = await adapter.getQuote('AAPL');
+    assert.strictEqual(quote, null);
+    assert.strictEqual(client.marketDataRequests.length, 0);
+    assert.deepStrictEqual(client.cancelledMarketData, [900000000]);
+    assert(adapter.logs.some(entry => entry.message === 'reqMktData failed'));
   }
 
   {
