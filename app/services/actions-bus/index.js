@@ -34,15 +34,25 @@ function decimalFactor(values) {
   return 10 ** places;
 }
 
+function isBlankActionArg(value) {
+  return typeof value === 'string' && value.trim() === '';
+}
+
+function hasInvalidNumericArg(values) {
+  return values.some((value) => isBlankActionArg(value));
+}
+
 function add(...values) {
   while (values.length && typeof values[values.length - 1] === 'object') values.pop();
+  if (!values.length || hasInvalidNumericArg(values)) return '';
   const nums = values.map(Number);
-  if (!nums.length || nums.some((n) => !Number.isFinite(n))) return '';
+  if (nums.some((n) => !Number.isFinite(n))) return '';
   const factor = decimalFactor(values);
   return nums.reduce((sum, n) => sum + Math.round(n * factor), 0) / factor;
 }
 
 function dist(a, b) {
+  if (hasInvalidNumericArg([a, b])) return '';
   const left = Number(a);
   const right = Number(b);
   if (!Number.isFinite(left) || !Number.isFinite(right)) return '';
@@ -59,7 +69,10 @@ function distPts(a, b, payload = {}) {
 }
 
 function distPtsPlus(a, b, extra, payload = {}) {
-  const pts = Number(distPts(a, b, payload));
+  if (hasInvalidNumericArg([extra])) return '';
+  const rawPts = distPts(a, b, payload);
+  if (rawPts === '') return '';
+  const pts = Number(rawPts);
   const extraPts = Number(extra);
   if (!Number.isFinite(pts) || !Number.isFinite(extraPts)) return '';
   return add(pts, extraPts);
