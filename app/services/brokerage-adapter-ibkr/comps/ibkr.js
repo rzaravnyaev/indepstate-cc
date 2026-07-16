@@ -6,6 +6,7 @@ const { ExecutionAdapter } = require('../../brokerage/comps/base');
 const DEFAULTS = Object.freeze({
   enabled: false,
   mode: 'paper',
+  debug: false,
   host: '127.0.0.1',
   port: 4002,
   clientId: 12,
@@ -103,6 +104,7 @@ function validateConfig(input = {}) {
   cfg.contractResolution.preferredPrimaryExchanges = normalizePreferredPrimaryExchanges(cfg.contractResolution.preferredPrimaryExchanges);
   const errors = [];
   if (typeof cfg.enabled !== 'boolean') errors.push('enabled must be boolean');
+  if (typeof cfg.debug !== 'boolean') errors.push('debug must be boolean');
   if (!['paper', 'live'].includes(String(cfg.mode))) errors.push('mode must be "paper" or "live"');
   if (!normalizeString(cfg.host)) errors.push('host is required');
   if (!Number.isInteger(Number(cfg.port)) || Number(cfg.port) <= 0 || Number(cfg.port) > 65535) errors.push('port must be an integer from 1 to 65535');
@@ -357,6 +359,7 @@ class IBKRAdapter extends ExecutionAdapter {
     }
     const entry = { level, message, ...safeContext };
     this.logs.push(entry);
+    if (this.cfg.debug !== true) return;
     const logger = level === 'error' ? console.error : console.log;
     logger('[IBKR]', entry);
   }

@@ -68,6 +68,37 @@
           "BTCUSDT": { "type": "string", "description": "BTC/USDT symbol" },
           "ETHUSDT": { "type": "string", "description": "ETH/USDT symbol" }
         }
+      },
+      "ibkr": {
+        "description": "Interactive Brokers provider settings",
+        "adapter": { "type": "string", "description": "Adapter name" },
+        "enabled": { "type": "boolean", "description": "Enable IBKR execution" },
+        "mode": { "type": "string", "description": "IBKR environment: paper or live" },
+        "debug": { "type": "boolean", "description": "Print IBKR adapter logs to the console" },
+        "host": { "type": "string", "description": "TWS / IB Gateway host" },
+        "port": { "type": "number", "description": "TWS / IB Gateway API port" },
+        "clientId": { "type": "number", "description": "IBKR API client ID" },
+        "accountId": { "type": "string", "description": "IBKR account ID" },
+        "defaultTif": { "type": "string", "description": "Default time in force" },
+        "instruments": {
+          "description": "IBKR contract mappings by symbol",
+          "__allowUnknown": true
+        },
+        "quoteTimeoutMs": { "type": "number", "description": "Quote timeout ms" },
+        "marketDataType": { "type": "number", "description": "Market data type" },
+        "defaultTickSize": { "type": "string", "description": "Fallback tick size" },
+        "contractResolveTimeoutMs": { "type": "number", "description": "Contract resolution timeout ms" },
+        "contractResolution": {
+          "description": "Dynamic contract resolution defaults",
+          "enabled": { "type": "boolean", "description": "Resolve missing contracts through IBKR" },
+          "defaultSecType": { "type": "string", "description": "Default security type" },
+          "defaultExchange": { "type": "string", "description": "Default exchange" },
+          "defaultCurrency": { "type": "string", "description": "Default currency" },
+          "preferredPrimaryExchanges": {
+            "description": "Preferred primary exchanges",
+            "item": { "type": "string", "description": "Exchange" }
+          }
+        }
       }
     }
   }

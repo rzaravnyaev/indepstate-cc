@@ -53,6 +53,20 @@ function makeAdapter(overrides = {}) {
   return { adapter, client };
 }
 
+function captureConsole(fn) {
+  const calls = [];
+  const originalLog = console.log;
+  const originalError = console.error;
+  console.log = (...args) => calls.push({ method: 'log', args });
+  console.error = (...args) => calls.push({ method: 'error', args });
+  try {
+    const result = fn();
+    return { result, calls };
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
+  }
+}
 
 function emitContractDetails(client, reqId, contract, extra = {}) {
   client.emit('contractDetails', reqId, { contract, ...extra });
@@ -67,10 +81,13 @@ function ready(adapter, client, nextId = 100) {
 
 (async () => {
   {
-    const valid = validateConfig({ enabled: false, host: '127.0.0.1', port: 4002, clientId: 1, mode: 'paper', defaultTif: 'DAY' });
+    const valid = validateConfig({ enabled: false, debug: false, host: '127.0.0.1', port: 4002, clientId: 1, mode: 'paper', defaultTif: 'DAY' });
     assert.strictEqual(valid.ok, true);
-    const invalid = validateConfig({ enabled: 'yes', host: '', port: 99999, clientId: -1, mode: 'demo', defaultTif: '' });
+    const debugValid = validateConfig({ enabled: false, debug: true, host: '127.0.0.1', port: 4002, clientId: 1, mode: 'paper', defaultTif: 'DAY' });
+    assert.strictEqual(debugValid.ok, true);
+    const invalid = validateConfig({ enabled: 'yes', debug: 'yes', host: '', port: 99999, clientId: -1, mode: 'demo', defaultTif: '' });
     assert.strictEqual(invalid.ok, false);
+    assert(invalid.errors.includes('debug must be boolean'));
     assert(invalid.errors.length >= 5);
   }
 
@@ -98,6 +115,17 @@ function ready(adapter, client, nextId = 100) {
     const adapter = new IBKRAdapter({ enabled: false, autoConnect: false }, 'ibkr');
     const res = await adapter.placeOrder({ symbol: 'AAPL', side: 'buy', type: 'market', qty: 1 });
     assert.strictEqual(res.status, 'disabled');
+  }
+
+  {
+    const { result, calls } = captureConsole(() => makeAdapter());
+    assert.strictEqual(calls.length, 0);
+    assert(result.adapter.logs.some(entry => entry.message === 'connecting'));
+  }
+
+  {
+    const { calls } = captureConsole(() => makeAdapter({ debug: true }));
+    assert(calls.some(call => call.args[0] === '[IBKR]'));
   }
 
   {

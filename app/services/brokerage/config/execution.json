@@ -54,6 +54,7 @@
             "adapter": "ibkr",
             "enabled": false,
             "mode": "paper",
+            "debug": false,
             "host": "127.0.0.1",
             "port": 4002,
             "clientId": 12,
