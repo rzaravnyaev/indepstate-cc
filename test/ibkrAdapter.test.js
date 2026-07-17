@@ -1,5 +1,7 @@
 const assert = require('assert');
 const { EventEmitter } = require('events');
+const fs = require('fs');
+const path = require('path');
 const {
   IBKRAdapter,
   validateConfig,
@@ -95,21 +97,47 @@ function ready(adapter, client, nextId = 100) {
 
 
   {
-    const arrayCfg = validateConfig({ enabled: false, host: '127.0.0.1', port: 4002, clientId: 1, mode: 'paper', defaultTif: 'DAY', contractResolution: { preferredPrimaryExchanges: ['NASDAQ', 'NYSE'] } });
-    assert.strictEqual(arrayCfg.ok, true);
-    assert.deepStrictEqual(arrayCfg.config.contractResolution.preferredPrimaryExchanges, ['NASDAQ', 'NYSE']);
+    const legacyCfg = validateConfig({ enabled: false, host: '127.0.0.1', port: 4002, clientId: 1, mode: 'paper', defaultTif: 'DAY', contractResolution: { defaultSecType: 'STK', defaultExchange: 'SMART', defaultCurrency: 'USD', preferredPrimaryExchanges: ['NASDAQ'] } });
+    assert.strictEqual(legacyCfg.ok, false);
+    assert(legacyCfg.errors.includes('contractResolution.defaultSecType is no longer supported; use contractResolution.profiles instead'));
+    assert(legacyCfg.errors.includes('contractResolution.defaultExchange is no longer supported; use contractResolution.profiles instead'));
+    assert(legacyCfg.errors.includes('contractResolution.defaultCurrency is no longer supported; use contractResolution.profiles instead'));
+    assert(legacyCfg.errors.includes('contractResolution.preferredPrimaryExchanges is no longer supported; use contractResolution.profiles instead'));
 
-    const csvCfg = validateConfig({ enabled: false, host: '127.0.0.1', port: 4002, clientId: 1, mode: 'paper', defaultTif: 'DAY', contractResolution: { preferredPrimaryExchanges: 'NASDAQ,NYSE, ARCA, AMEX' } });
-    assert.strictEqual(csvCfg.ok, true);
-    assert.deepStrictEqual(csvCfg.config.contractResolution.preferredPrimaryExchanges, ['NASDAQ', 'NYSE', 'ARCA', 'AMEX']);
+    const invalidDefault = validateConfig({ enabled: false, host: '127.0.0.1', port: 4002, clientId: 1, mode: 'paper', defaultTif: 'DAY', contractResolution: { defaultProfile: 'MISSING' } });
+    assert.strictEqual(invalidDefault.ok, false);
+    assert(invalidDefault.errors.includes('contractResolution.defaultProfile references unknown profile "MISSING"'));
 
-    const emptyCfg = validateConfig({ enabled: false, host: '127.0.0.1', port: 4002, clientId: 1, mode: 'paper', defaultTif: 'DAY', contractResolution: { preferredPrimaryExchanges: '' } });
-    assert.strictEqual(emptyCfg.ok, true);
-    assert.deepStrictEqual(emptyCfg.config.contractResolution.preferredPrimaryExchanges, ['NASDAQ', 'NYSE', 'ARCA', 'AMEX']);
+    const invalidByType = validateConfig({ enabled: false, host: '127.0.0.1', port: 4002, clientId: 1, mode: 'paper', defaultTif: 'DAY', contractResolution: { profileByInstrumentType: { EQ: 'NOPE' } } });
+    assert.strictEqual(invalidByType.ok, false);
+    assert(invalidByType.errors.includes('contractResolution.profileByInstrumentType is no longer supported; use contractResolution.profiles instead'));
 
-    const objectCfg = validateConfig({ enabled: false, host: '127.0.0.1', port: 4002, clientId: 1, mode: 'paper', defaultTif: 'DAY', contractResolution: { preferredPrimaryExchanges: { primary: 'NASDAQ' } } });
-    assert.strictEqual(objectCfg.ok, false);
-    assert(objectCfg.errors.includes('contractResolution.preferredPrimaryExchanges must be an array'));
+    const invalidBySymbol = validateConfig({ enabled: false, host: '127.0.0.1', port: 4002, clientId: 1, mode: 'paper', defaultTif: 'DAY', contractResolution: { profileBySymbol: { ALNY: 'NOPE' } } });
+    assert.strictEqual(invalidBySymbol.ok, false);
+    assert(invalidBySymbol.errors.includes('contractResolution.profileBySymbol.ALNY references unknown profile "NOPE"'));
+
+    const invalidForce = validateConfig({ enabled: false, host: '127.0.0.1', port: 4002, clientId: 1, mode: 'paper', defaultTif: 'DAY', contractResolution: { forceProfileForInstrumentTypes: 'CFD' } });
+    assert.strictEqual(invalidForce.ok, false);
+    assert(invalidForce.errors.includes('contractResolution.forceProfileForInstrumentTypes is no longer supported; use contractResolution.profiles instead'));
+
+    const invalidProfile = validateConfig({ enabled: false, host: '127.0.0.1', port: 4002, clientId: 1, mode: 'paper', defaultTif: 'DAY', contractResolution: { profiles: { BAD: { secType: 'STK', exchange: 'SMART', preferredPrimaryExchanges: { primary: 'NASDAQ' } } }, profileBySymbol: {}, defaultProfile: 'BAD' } });
+    assert.strictEqual(invalidProfile.ok, false);
+    assert(invalidProfile.errors.includes('contractResolution.profiles.BAD.currency is required'));
+    assert(invalidProfile.errors.includes('contractResolution.profiles.BAD.preferredPrimaryExchanges must be an array or comma-separated string'));
+  }
+
+  {
+    const files = [
+      path.join(__dirname, '../app/main.js'),
+      path.join(__dirname, '../app/services/pendingOrders/hub.js'),
+    ];
+    for (const file of files) {
+      const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
+      const contextQuoteCalls = lines.filter(line =>
+        (line.includes('getQuote?.(') || line.includes('forgetQuote?.(')) && line.includes(', {')
+      );
+      assert.deepStrictEqual(contextQuoteCalls, [], `${path.basename(file)} must not pass object context to shared quote adapter methods`);
+    }
   }
 
   {
@@ -166,6 +194,73 @@ function ready(adapter, client, nextId = 100) {
     const cached = await adapter.resolveContractForSymbol('INTC');
     assert.strictEqual(cached.conId, 270639);
     assert.strictEqual(client.contractDetailsRequests.length, 1);
+  }
+
+  {
+    const { adapter, client } = makeAdapter({ instruments: {} });
+    ready(adapter, client, 90);
+    const promise = adapter.resolveContractForSymbol('ALNY');
+    assert.deepStrictEqual(client.contractDetailsRequests[0].contract, { symbol: 'ALNY', secType: 'STK', exchange: 'SMART', currency: 'USD' });
+    emitContractDetails(client, client.contractDetailsRequests[0].reqId, { conId: 12345, symbol: 'ALNY', secType: 'STK', exchange: 'SMART', currency: 'USD', primaryExchange: 'NASDAQ' }, { minTick: 0.01 });
+    const contract = await promise;
+    assert.strictEqual(contract.secType, 'STK');
+  }
+
+  {
+    const { adapter, client } = makeAdapter({ instruments: {}, contractResolution: { profileBySymbol: { ALNY: 'CFD' } } });
+    ready(adapter, client, 90);
+    const promise = adapter.resolveContractForSymbol('ALNY');
+    assert.deepStrictEqual(client.contractDetailsRequests[0].contract, { symbol: 'ALNY', secType: 'CFD', exchange: 'SMART', currency: 'USD' });
+    emitContractDetails(client, client.contractDetailsRequests[0].reqId, { conId: 54321, symbol: 'ALNY', secType: 'CFD', exchange: 'SMART', currency: 'USD' }, { minTick: 0.01 });
+    const contract = await promise;
+    assert.strictEqual(contract.secType, 'CFD');
+  }
+
+  {
+    const { adapter, client } = makeAdapter({
+      instruments: {
+        ALNY: { conId: 999, symbol: 'ALNY', secType: 'CFD', exchange: 'SMART', currency: 'USD', tickSize: 0.01 },
+      },
+      contractResolution: { profileBySymbol: { ALNY: 'STK' } },
+    });
+    ready(adapter, client, 90);
+    const contract = await adapter.resolveContractForSymbol('ALNY');
+    assert.strictEqual(contract.conId, 999);
+    assert.strictEqual(contract.secType, 'CFD');
+    assert.strictEqual(client.contractDetailsRequests.length, 0);
+  }
+
+  {
+    const { adapter, client } = makeAdapter({ instruments: {}, contractResolution: { profileBySymbol: { ALNY: 'CFD' } } });
+    ready(adapter, client, 90);
+    const promise = adapter.resolveContractForSymbol('ALNY');
+    assert.deepStrictEqual(client.contractDetailsRequests[0].contract, { symbol: 'ALNY', secType: 'CFD', exchange: 'SMART', currency: 'USD' });
+    emitContractDetails(client, client.contractDetailsRequests[0].reqId, { conId: 54321, symbol: 'ALNY', secType: 'CFD', exchange: 'SMART', currency: 'USD' }, { minTick: 0.01 });
+    const contract = await promise;
+    assert.strictEqual(contract.secType, 'CFD');
+  }
+
+  {
+    const { adapter, client } = makeAdapter({ instruments: {} });
+    ready(adapter, client, 90);
+
+    const stockPromise = adapter.resolveContractForSymbol('ALNY');
+    emitContractDetails(client, client.contractDetailsRequests[0].reqId, { conId: 111, symbol: 'ALNY', secType: 'STK', exchange: 'SMART', currency: 'USD', primaryExchange: 'NASDAQ' }, { minTick: 0.01 });
+    const stock = await stockPromise;
+    assert.strictEqual(stock.conId, 111);
+
+    adapter.cfg.contractResolution.profileBySymbol.ALNY = 'CFD';
+    const cfdPromise = adapter.resolveContractForSymbol('ALNY');
+    assert.strictEqual(client.contractDetailsRequests.length, 2);
+    assert.deepStrictEqual(client.contractDetailsRequests[1].contract, { symbol: 'ALNY', secType: 'CFD', exchange: 'SMART', currency: 'USD' });
+    emitContractDetails(client, client.contractDetailsRequests[1].reqId, { conId: 222, symbol: 'ALNY', secType: 'CFD', exchange: 'SMART', currency: 'USD' }, { minTick: 0.01 });
+    const cfd = await cfdPromise;
+    assert.strictEqual(cfd.conId, 222);
+
+    adapter.cfg.contractResolution.profileBySymbol.ALNY = 'STK';
+    const cachedStock = await adapter.resolveContractForSymbol('ALNY');
+    assert.strictEqual(cachedStock.conId, 111);
+    assert.strictEqual(client.contractDetailsRequests.length, 2);
   }
 
   {
@@ -334,6 +429,21 @@ function ready(adapter, client, nextId = 100) {
     assert.strictEqual(res.status, 'ok');
     assert.strictEqual(client.placed[0].contract.conId, 270639);
     assert.strictEqual(client.placed[0].order.totalQuantity, 3);
+  }
+
+  {
+    const { adapter, client } = makeAdapter({ instruments: {}, contractResolution: { profileBySymbol: { ALNY: 'CFD' } } });
+    ready(adapter, client, 100);
+    const promise = adapter.placeOrder({ symbol: 'ALNY', instrumentType: 'CFD', side: 'buy', type: 'market', qty: 1, clientOrderId: 'cid-alny-cfd' });
+    await Promise.resolve();
+    assert.deepStrictEqual(client.contractDetailsRequests[0].contract, { symbol: 'ALNY', secType: 'CFD', exchange: 'SMART', currency: 'USD' });
+    emitContractDetails(client, client.contractDetailsRequests[0].reqId, { conId: 54321, symbol: 'ALNY', secType: 'CFD', exchange: 'SMART', currency: 'USD' });
+    await Promise.resolve();
+    await Promise.resolve();
+    const res = await promise;
+    assert.strictEqual(res.status, 'ok');
+    assert.strictEqual(client.placed[0].contract.secType, 'CFD');
+    assert.strictEqual(client.placed[0].contract.exchange, 'SMART');
   }
 
   {

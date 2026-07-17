@@ -91,12 +91,38 @@
         "contractResolution": {
           "description": "Dynamic contract resolution defaults",
           "enabled": { "type": "boolean", "description": "Resolve missing contracts through IBKR" },
-          "defaultSecType": { "type": "string", "description": "Default security type" },
-          "defaultExchange": { "type": "string", "description": "Default exchange" },
-          "defaultCurrency": { "type": "string", "description": "Default currency" },
-          "preferredPrimaryExchanges": {
-            "description": "Preferred primary exchanges",
-            "item": { "type": "string", "description": "Exchange" }
+          "profiles": {
+            "description": "Named IBKR contract resolution profiles",
+            "__allowUnknown": true,
+            "STK": {
+              "description": "Stock contract resolution profile",
+              "secType": { "type": "string", "description": "IBKR security type" },
+              "exchange": { "type": "string", "description": "IBKR destination exchange" },
+              "currency": { "type": "string", "description": "Contract currency" },
+              "preferredPrimaryExchanges": {
+                "description": "Preferred primary exchanges",
+                "item": { "type": "string", "description": "Exchange" }
+              }
+            },
+            "CFD": {
+              "description": "CFD contract resolution profile",
+              "secType": { "type": "string", "description": "IBKR security type" },
+              "exchange": { "type": "string", "description": "IBKR destination exchange" },
+              "currency": { "type": "string", "description": "Contract currency" },
+              "preferredPrimaryExchanges": {
+                "description": "Preferred primary exchanges",
+                "item": { "type": "string", "description": "Exchange" }
+              }
+            }
+          },
+          "profileBySymbol": {
+            "description": "Contract resolution profile per symbol",
+            "__allowUnknown": true,
+            "ALNY": { "type": "string", "description": "Profile for ALNY" }
+          },
+          "defaultProfile": {
+            "type": "string",
+            "description": "Profile used when no instrument-specific profile is selected"
           }
         }
       }

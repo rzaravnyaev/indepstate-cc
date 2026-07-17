@@ -19,10 +19,22 @@ const DEFAULTS = Object.freeze({
   snapshotQuotes: false,
   contractResolution: {
     enabled: true,
-    defaultSecType: 'STK',
-    defaultExchange: 'SMART',
-    defaultCurrency: 'USD',
-    preferredPrimaryExchanges: ['NASDAQ', 'NYSE', 'ARCA', 'AMEX'],
+    profiles: {
+      STK: {
+        secType: 'STK',
+        exchange: 'SMART',
+        currency: 'USD',
+        preferredPrimaryExchanges: ['NASDAQ', 'NYSE', 'ARCA', 'AMEX'],
+      },
+      CFD: {
+        secType: 'CFD',
+        exchange: 'SMART',
+        currency: 'USD',
+        preferredPrimaryExchanges: [],
+      },
+    },
+    profileBySymbol: {},
+    defaultProfile: 'STK',
   },
   autoConnect: true,
 });
@@ -93,15 +105,60 @@ function normalizePreferredPrimaryExchanges(value) {
   if (Array.isArray(value)) return value;
   if (typeof value === 'string') {
     const trimmed = value.trim();
-    if (!trimmed) return DEFAULTS.contractResolution.preferredPrimaryExchanges.slice();
+    if (!trimmed) return [];
     return trimmed.split(',').map(part => part.trim()).filter(Boolean);
   }
   return value;
 }
 
+function normalizeContractResolutionProfile(profile = {}) {
+  const secType = normalizeString(profile.secType).toUpperCase();
+  const exchange = normalizeString(profile.exchange).toUpperCase();
+  const currency = normalizeString(profile.currency).toUpperCase();
+  const preferredPrimaryExchanges = normalizePreferredPrimaryExchanges(profile.preferredPrimaryExchanges);
+  return {
+    secType,
+    exchange,
+    currency,
+    preferredPrimaryExchanges: Array.isArray(preferredPrimaryExchanges)
+      ? preferredPrimaryExchanges.map(x => normalizeString(x).toUpperCase()).filter(Boolean)
+      : [],
+  };
+}
+
+function normalizeContractResolutionConfig(cr = {}) {
+  const input = cr || {};
+  const cfg = {
+    ...DEFAULTS.contractResolution,
+    ...input,
+    profiles: { ...DEFAULTS.contractResolution.profiles, ...((input && input.profiles) || {}) },
+    profileBySymbol: { ...DEFAULTS.contractResolution.profileBySymbol, ...((input && input.profileBySymbol) || {}) },
+  };
+  const profiles = {};
+  const rawProfiles = cfg.profiles && typeof cfg.profiles === 'object' && !Array.isArray(cfg.profiles) ? cfg.profiles : {};
+  for (const [name, profile] of Object.entries(rawProfiles)) {
+    const key = normalizeString(name).toUpperCase();
+    if (!key || !profile || typeof profile !== 'object' || Array.isArray(profile)) continue;
+    profiles[key] = normalizeContractResolutionProfile(profile);
+  }
+  cfg.profiles = profiles;
+
+  const profileBySymbol = {};
+  const rawBySymbol = cfg.profileBySymbol && typeof cfg.profileBySymbol === 'object' && !Array.isArray(cfg.profileBySymbol)
+    ? cfg.profileBySymbol
+    : {};
+  for (const [symbol, profileName] of Object.entries(rawBySymbol)) {
+    const key = normalizeString(symbol).toUpperCase();
+    const val = normalizeString(profileName).toUpperCase();
+    if (key && val) profileBySymbol[key] = val;
+  }
+  cfg.profileBySymbol = profileBySymbol;
+  cfg.defaultProfile = normalizeString(cfg.defaultProfile).toUpperCase();
+  return cfg;
+}
+
 function validateConfig(input = {}) {
   const cfg = { ...DEFAULTS, ...input, contractResolution: { ...DEFAULTS.contractResolution, ...((input && input.contractResolution) || {}) } };
-  cfg.contractResolution.preferredPrimaryExchanges = normalizePreferredPrimaryExchanges(cfg.contractResolution.preferredPrimaryExchanges);
   const errors = [];
   if (typeof cfg.enabled !== 'boolean') errors.push('enabled must be boolean');
   if (typeof cfg.debug !== 'boolean') errors.push('debug must be boolean');
@@ -118,11 +175,51 @@ function validateConfig(input = {}) {
   if (!cfg.contractResolution || typeof cfg.contractResolution !== 'object' || Array.isArray(cfg.contractResolution)) {
     errors.push('contractResolution must be an object');
   } else {
-    if (typeof cfg.contractResolution.enabled !== 'boolean') errors.push('contractResolution.enabled must be boolean');
-    for (const key of ['defaultSecType', 'defaultExchange', 'defaultCurrency']) {
-      if (!normalizeString(cfg.contractResolution[key])) errors.push(`contractResolution.${key} is required`);
+    for (const key of ['defaultSecType', 'defaultExchange', 'defaultCurrency', 'preferredPrimaryExchanges', 'profileByInstrumentType', 'forceProfileForInstrumentTypes']) {
+      if (Object.prototype.hasOwnProperty.call(cfg.contractResolution, key)) {
+        errors.push(`contractResolution.${key} is no longer supported; use contractResolution.profiles instead`);
+      }
     }
-    if (!Array.isArray(cfg.contractResolution.preferredPrimaryExchanges)) errors.push('contractResolution.preferredPrimaryExchanges must be an array');
+    if (typeof cfg.contractResolution.enabled !== 'boolean') errors.push('contractResolution.enabled must be boolean');
+    if (cfg.contractResolution.profiles != null && (typeof cfg.contractResolution.profiles !== 'object' || Array.isArray(cfg.contractResolution.profiles))) {
+      errors.push('contractResolution.profiles must be an object');
+    }
+    if (cfg.contractResolution.profileBySymbol != null && (typeof cfg.contractResolution.profileBySymbol !== 'object' || Array.isArray(cfg.contractResolution.profileBySymbol))) {
+      errors.push('contractResolution.profileBySymbol must be an object');
+    }
+    const profiles = cfg.contractResolution.profiles && typeof cfg.contractResolution.profiles === 'object' && !Array.isArray(cfg.contractResolution.profiles)
+      ? cfg.contractResolution.profiles
+      : {};
+    const profileNames = new Set(Object.keys(profiles).map(name => normalizeString(name).toUpperCase()).filter(Boolean));
+    if (profileNames.size === 0) errors.push('contractResolution.profiles must define at least one profile');
+    for (const [name, profile] of Object.entries(profiles)) {
+      const profileName = normalizeString(name).toUpperCase();
+      if (!profileName) errors.push('contractResolution.profiles profile names must be non-empty');
+      if (!profile || typeof profile !== 'object' || Array.isArray(profile)) {
+        errors.push(`contractResolution.profiles.${name} must be an object`);
+        continue;
+      }
+      for (const key of ['secType', 'exchange', 'currency']) {
+        if (!normalizeString(profile[key])) errors.push(`contractResolution.profiles.${name}.${key} is required`);
+      }
+      const preferred = normalizePreferredPrimaryExchanges(profile.preferredPrimaryExchanges);
+      if (!Array.isArray(preferred)) errors.push(`contractResolution.profiles.${name}.preferredPrimaryExchanges must be an array or comma-separated string`);
+    }
+    const defaultProfile = normalizeString(cfg.contractResolution.defaultProfile).toUpperCase();
+    if (!defaultProfile) {
+      errors.push('contractResolution.defaultProfile is required');
+    } else if (!profileNames.has(defaultProfile)) {
+      errors.push(`contractResolution.defaultProfile references unknown profile "${defaultProfile}"`);
+    }
+    const bySymbol = cfg.contractResolution.profileBySymbol && typeof cfg.contractResolution.profileBySymbol === 'object' && !Array.isArray(cfg.contractResolution.profileBySymbol)
+      ? cfg.contractResolution.profileBySymbol
+      : {};
+    for (const [symbol, profileNameRaw] of Object.entries(bySymbol)) {
+      const profileName = normalizeString(profileNameRaw).toUpperCase();
+      if (!normalizeString(symbol)) errors.push('contractResolution.profileBySymbol symbol keys must be non-empty');
+      if (!profileName) errors.push(`contractResolution.profileBySymbol.${symbol} is required`);
+      else if (!profileNames.has(profileName)) errors.push(`contractResolution.profileBySymbol.${symbol} references unknown profile "${profileName}"`);
+    }
   }
   if (cfg.instruments != null && (typeof cfg.instruments !== 'object' || Array.isArray(cfg.instruments))) errors.push('instruments must be an object keyed by app symbol');
   return { ok: errors.length === 0, errors, config: cfg };
@@ -317,11 +414,7 @@ class IBKRAdapter extends ExecutionAdapter {
     this.cfg.contractResolveTimeoutMs = Number(this.cfg.contractResolveTimeoutMs);
     this.cfg.marketDataType = Number(this.cfg.marketDataType);
     this.cfg.defaultTickSize = this.cfg.defaultTickSize == null || this.cfg.defaultTickSize === '' ? null : Number(this.cfg.defaultTickSize);
-    this.cfg.contractResolution = { ...DEFAULTS.contractResolution, ...(this.cfg.contractResolution || {}) };
-    this.cfg.contractResolution.defaultSecType = normalizeString(this.cfg.contractResolution.defaultSecType).toUpperCase();
-    this.cfg.contractResolution.defaultExchange = normalizeString(this.cfg.contractResolution.defaultExchange).toUpperCase();
-    this.cfg.contractResolution.defaultCurrency = normalizeString(this.cfg.contractResolution.defaultCurrency).toUpperCase();
-    this.cfg.contractResolution.preferredPrimaryExchanges = (this.cfg.contractResolution.preferredPrimaryExchanges || []).map(x => normalizeString(x).toUpperCase()).filter(Boolean);
+    this.cfg.contractResolution = normalizeContractResolutionConfig(this.cfg.contractResolution);
     this.cfg.instruments = this.cfg.instruments || {};
     this.events = new EventEmitter();
     this.client = null;
@@ -506,13 +599,29 @@ class IBKRAdapter extends ExecutionAdapter {
     return this.nextContractReqId++;
   }
 
-  #buildDefaultContractRequest(symbol) {
+  #selectContractResolutionProfile(symbol) {
     const cr = this.cfg.contractResolution;
+    const key = normalizeString(symbol).toUpperCase();
+    const profileName = normalizeString(cr.profileBySymbol?.[key]).toUpperCase() || cr.defaultProfile;
+
+    const profile = cr.profiles[profileName];
+    return {
+      name: profileName,
+      cacheKey: `${profileName}:${profile.secType}:${profile.exchange}:${profile.currency}:${(profile.preferredPrimaryExchanges || []).join(',')}`,
+      ...profile,
+    };
+  }
+
+  #contractCacheKey(symbol, profile) {
+    return `${normalizeString(symbol).toUpperCase()}|${profile?.cacheKey || 'STATIC'}`;
+  }
+
+  #buildDefaultContractRequest(symbol, profile) {
     return {
       symbol,
-      secType: cr.defaultSecType,
-      exchange: cr.defaultExchange,
-      currency: cr.defaultCurrency,
+      secType: profile.secType,
+      exchange: profile.exchange,
+      currency: profile.currency,
     };
   }
 
@@ -520,19 +629,18 @@ class IBKRAdapter extends ExecutionAdapter {
     return candidates.map(c => safeContractSummary(c.contract || c));
   }
 
-  #selectResolvedContract(symbol, candidates) {
-    const cr = this.cfg.contractResolution;
+  #selectResolvedContract(symbol, candidates, profile) {
     const normalized = candidates.map(normalizeContractDetails).filter(c => Object.keys(c.contract).length);
     let plausible = normalized.filter(c => positiveNumber(c.contract.conId));
-    plausible = plausible.filter(c => normalizeString(c.contract.secType).toUpperCase() === cr.defaultSecType);
-    plausible = plausible.filter(c => normalizeString(c.contract.currency).toUpperCase() === cr.defaultCurrency);
-    plausible = plausible.filter(c => contractSupportsExchange({ ...c.contract, validExchanges: extractContractFromDetails(c.raw).validExchanges || c.raw?.validExchanges }, cr.defaultExchange));
+    plausible = plausible.filter(c => normalizeString(c.contract.secType).toUpperCase() === profile.secType);
+    plausible = plausible.filter(c => normalizeString(c.contract.currency).toUpperCase() === profile.currency);
+    plausible = plausible.filter(c => contractSupportsExchange({ ...c.contract, validExchanges: extractContractFromDetails(c.raw).validExchanges || c.raw?.validExchanges }, profile.exchange));
 
     if (plausible.length === 0) {
       throw createContextError(`IBKR could not resolve contract for ${symbol}`, { adapter: 'ibkr', symbol, candidates: this.#candidateSummaries(normalized) });
     }
 
-    const preferred = cr.preferredPrimaryExchanges || [];
+    const preferred = profile.preferredPrimaryExchanges || [];
     for (const pref of preferred) {
       const matching = plausible.filter(c => primaryExchangeMatches(c.contract.primaryExchange, pref));
       if (matching.length === 1) return matching[0];
@@ -556,7 +664,7 @@ class IBKRAdapter extends ExecutionAdapter {
     const rec = this.contractRequests.get(key);
     if (!rec) return;
     try {
-      const selected = this.#selectResolvedContract(rec.symbol, rec.candidates);
+      const selected = this.#selectResolvedContract(rec.symbol, rec.candidates, rec.profile);
       this.#resolveContract(key, selected);
     } catch (err) {
       this.#resolveContract(key, null, err.message, err.context);
@@ -570,9 +678,9 @@ class IBKRAdapter extends ExecutionAdapter {
     clearTimeout(rec.timer);
     this.contractRequests.delete(key);
     if (selected) {
-      const record = { contract: selected.contract, tickSize: selected.tickSize || positiveNumber(this.cfg.defaultTickSize), source: 'resolved' };
-      this.resolvedContracts.set(rec.symbol, record);
-      this.#log('info', 'IBKR contract resolved', { provider: this.provider, reqId: Number(key), symbol: rec.symbol, contract: safeContractSummary(record.contract), tickSize: record.tickSize });
+      const record = { contract: selected.contract, tickSize: selected.tickSize || positiveNumber(this.cfg.defaultTickSize), source: 'resolved', profile: rec.profile, cacheKey: rec.cacheKey };
+      this.resolvedContracts.set(rec.cacheKey, record);
+      this.#log('info', 'IBKR contract resolved', { provider: this.provider, reqId: Number(key), symbol: rec.symbol, profile: rec.profile?.name, contract: safeContractSummary(record.contract), tickSize: record.tickSize });
       rec.resolve(record);
     } else {
       const message = error || `IBKR could not resolve contract for ${rec.symbol}`;
@@ -640,7 +748,7 @@ class IBKRAdapter extends ExecutionAdapter {
     const rec = this.quoteRequests.get(key);
     if (!rec) return;
     this.quoteRequests.delete(key);
-    if (this.quoteRequestsBySymbol.get(rec.symbol) === key) this.quoteRequestsBySymbol.delete(rec.symbol);
+    if (this.quoteRequestsBySymbol.get(rec.quoteKey) === key) this.quoteRequestsBySymbol.delete(rec.quoteKey);
     if (cancel) this.#cancelQuoteRequest(key);
     if (resolveWaiters) {
       for (const waiter of rec.waiters || []) {
@@ -677,7 +785,7 @@ class IBKRAdapter extends ExecutionAdapter {
   #startQuoteStream(reqId, rec) {
     const key = String(reqId);
     this.quoteRequests.set(key, rec);
-    this.quoteRequestsBySymbol.set(rec.symbol, key);
+    this.quoteRequestsBySymbol.set(rec.quoteKey, key);
     try {
       this.client.reqMktData(reqId, rec.contract, '', this.cfg.snapshotQuotes === true, false, []);
     } catch (err) {
@@ -745,9 +853,11 @@ class IBKRAdapter extends ExecutionAdapter {
     if (!key) throw createContextError('IBKR symbol is required for contract resolution', { adapter: 'ibkr' });
 
     const staticRecord = this.getStaticContractRecordForSymbol(key);
-    if (staticRecord) return staticRecord;
+    if (staticRecord) return { ...staticRecord, profile: { name: 'STATIC', cacheKey: 'STATIC' }, cacheKey: this.#contractCacheKey(key, { cacheKey: 'STATIC' }) };
 
-    const cached = this.resolvedContracts.get(key);
+    const profile = this.#selectContractResolutionProfile(key);
+    const cacheKey = this.#contractCacheKey(key, profile);
+    const cached = this.resolvedContracts.get(cacheKey);
     if (cached) return cached;
 
     if (this.cfg.contractResolution.enabled === false) {
@@ -759,8 +869,8 @@ class IBKRAdapter extends ExecutionAdapter {
 
     const reqId = this.#allocateContractReqId();
     const reqKey = String(reqId);
-    const request = this.#buildDefaultContractRequest(key);
-    this.#log('info', 'IBKR contract resolution started', { provider: this.provider, reqId, symbol: key, contract: safeContractSummary(request) });
+    const request = this.#buildDefaultContractRequest(key, profile);
+    this.#log('info', 'IBKR contract resolution started', { provider: this.provider, reqId, symbol: key, profile: profile.name, contract: safeContractSummary(request) });
 
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -768,7 +878,7 @@ class IBKRAdapter extends ExecutionAdapter {
         if (!rec) return;
         if (rec.candidates.length) {
           try {
-            const selected = this.#selectResolvedContract(rec.symbol, rec.candidates);
+            const selected = this.#selectResolvedContract(rec.symbol, rec.candidates, rec.profile);
             this.#resolveContract(reqKey, selected);
           } catch (err) {
             this.#resolveContract(reqKey, null, err.message, err.context);
@@ -777,7 +887,7 @@ class IBKRAdapter extends ExecutionAdapter {
           this.#resolveContract(reqKey, null, `IBKR could not resolve contract for ${key}`, { adapter: 'ibkr', symbol: key, candidates: [] });
         }
       }, this.cfg.contractResolveTimeoutMs);
-      this.contractRequests.set(reqKey, { reqId, symbol: key, request, candidates: [], resolve, reject, timer });
+      this.contractRequests.set(reqKey, { reqId, symbol: key, request, profile, cacheKey, candidates: [], resolve, reject, timer });
       try {
         this.client.reqContractDetails(reqId, request);
       } catch (err) {
@@ -818,7 +928,8 @@ class IBKRAdapter extends ExecutionAdapter {
       return null;
     }
 
-    const existingReqId = this.quoteRequestsBySymbol.get(key);
+    const quoteKey = this.#contractCacheKey(key, contractRecord.profile);
+    const existingReqId = this.quoteRequestsBySymbol.get(quoteKey);
     if (existingReqId) return this.#waitForQuote(existingReqId);
 
     const reqId = this.#allocateQuoteReqId();
@@ -838,6 +949,7 @@ class IBKRAdapter extends ExecutionAdapter {
     this.#startQuoteStream(reqId, {
       reqId,
       symbol: key,
+      quoteKey,
       contract,
       tickSize,
       quote: {},
@@ -849,8 +961,9 @@ class IBKRAdapter extends ExecutionAdapter {
 
   async forgetQuote(symbol) {
     const key = normalizeString(symbol).toUpperCase();
-    const reqId = this.quoteRequestsBySymbol.get(key);
-    if (reqId) this.#resolveQuote(reqId, null, 'forgotten');
+    for (const [quoteKey, reqId] of Array.from(this.quoteRequestsBySymbol.entries())) {
+      if (quoteKey === key || quoteKey.startsWith(`${key}|`)) this.#resolveQuote(reqId, null, 'forgotten');
+    }
   }
 
   async placeOrder(order) {

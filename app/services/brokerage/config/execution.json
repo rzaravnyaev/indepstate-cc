@@ -67,15 +67,27 @@
             "contractResolveTimeoutMs": 5000,
             "contractResolution": {
                 "enabled": true,
-                "defaultSecType": "STK",
-                "defaultExchange": "SMART",
-                "defaultCurrency": "USD",
-                "preferredPrimaryExchanges": [
-                    "NASDAQ",
-                    "NYSE",
-                    "ARCA",
-                    "AMEX"
-                ]
+                "profiles": {
+                    "STK": {
+                        "secType": "STK",
+                        "exchange": "SMART",
+                        "currency": "USD",
+                        "preferredPrimaryExchanges": [
+                            "NASDAQ",
+                            "NYSE",
+                            "ARCA",
+                            "AMEX"
+                        ]
+                    },
+                    "CFD": {
+                        "secType": "CFD",
+                        "exchange": "SMART",
+                        "currency": "USD",
+                        "preferredPrimaryExchanges": []
+                    }
+                },
+                "profileBySymbol": {},
+                "defaultProfile": "STK"
             }
         }
     }
