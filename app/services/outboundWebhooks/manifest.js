@@ -1,0 +1,109 @@
+const path = require('path');
+const settings = require('../settings');
+const loadConfig = require('../../config/load');
+const events = require('../events');
+const { createOutboundWebhooksService } = require('.');
+const { WebhookCommand } = require('./command');
+
+settings.register(
+  'outbound-webhooks',
+  path.join(__dirname, 'config', 'outbound-webhooks.json'),
+  path.join(__dirname, 'config', 'outbound-webhooks-settings-descriptor.json')
+);
+
+const LIFECYCLE_EVENTS = [
+  'order:placed',
+  'position:opened',
+  'position:closed',
+  'order:cancelled',
+  'execution:order-message'
+];
+
+function signedOptionLegQty(leg) {
+  const qty = Math.abs(Number(leg?.quantity ?? leg?.qty ?? 0));
+  const side = String(leg?.side || '').toLowerCase();
+  if (!Number.isFinite(qty) || qty <= 0) return 0;
+  return side === 'sell' || side === 'short' ? -qty : qty;
+}
+
+function optionLegToken(leg) {
+  if (!leg || typeof leg !== 'object') return '';
+  const qty = signedOptionLegQty(leg);
+  if (!qty) return '';
+  const optionCode = String(leg.option || '').toUpperCase().startsWith('P') ? 'P' : 'C';
+  const strike = leg.strike ?? leg.price ?? '';
+  return `${qty > 0 ? '+' : '-'}${Math.abs(qty)}${optionCode}${strike}`;
+}
+
+function formatOptionLegs(legs) {
+  if (!Array.isArray(legs)) return '';
+  return legs.map(optionLegToken).filter(Boolean).join('/');
+}
+
+function formatOptionLegPair(legs) {
+  if (!Array.isArray(legs)) return '';
+  return legs.map(leg => leg && typeof leg === 'object' ? leg.strike ?? leg.price ?? '' : '').filter(v => v !== '').join('/');
+}
+
+function firstValue(...values) {
+  for (const value of values) {
+    if (value != null && value !== '') return value;
+  }
+  return undefined;
+}
+
+function enrichLifecyclePayload(eventName, payload) {
+  const base = payload && typeof payload === 'object' ? payload : {};
+  const order = base.order && typeof base.order === 'object' ? base.order : {};
+  const origOrder = base.origOrder && typeof base.origOrder === 'object' ? base.origOrder : {};
+  const result = base.result && typeof base.result === 'object' ? base.result : {};
+  const trade = base.trade && typeof base.trade === 'object' ? base.trade : {};
+  const meta = order.meta && typeof order.meta === 'object' ? order.meta : {};
+  const origMeta = origOrder.meta && typeof origOrder.meta === 'object' ? origOrder.meta : {};
+  const legs = firstValue(base.legs, order.legs, order.legsLabel, order.name, origOrder.legs, origOrder.legsLabel, origOrder.name);
+  return {
+    event: eventName,
+    cardId: firstValue(base.cardId, base.cid, result.cid, order.cid, meta.cid, meta.requestId, origOrder.cid, origMeta.cid, origMeta.requestId, base.ticket),
+    cid: firstValue(base.cid, result.cid, order.cid, meta.cid, origOrder.cid, origMeta.cid),
+    symbol: firstValue(base.symbol, order.symbol, order.ticker, origOrder.symbol, origOrder.ticker, trade.symbol),
+    legs,
+    legsText: formatOptionLegs(legs),
+    legsPair: formatOptionLegPair(legs),
+    qty: firstValue(base.qty, order.qty, order.quantity, order.size, origOrder.qty, origOrder.quantity, origOrder.size),
+    price: firstValue(base.price, order.price, order.fillPrice, order.entryPrice, origOrder.price, origOrder.fillPrice, trade.price, trade.closePrice),
+    ...base
+  };
+}
+
+function bridgeLifecycleEvents(actionBus) {
+  if (!actionBus || typeof actionBus.emit !== 'function') return;
+  if (actionBus.__outboundWebhooksLifecycleBridge) return;
+  actionBus.__outboundWebhooksLifecycleBridge = true;
+  for (const eventName of LIFECYCLE_EVENTS) {
+    events.on(eventName, payload => actionBus.emit(eventName, enrichLifecyclePayload(eventName, payload)));
+  }
+}
+
+function initService(servicesApi = {}) {
+  let cfg = {};
+  try {
+    cfg = loadConfig('../services/outboundWebhooks/config/outbound-webhooks.json');
+  } catch {
+    cfg = {};
+  }
+
+  const sender = createOutboundWebhooksService(cfg);
+  servicesApi.outboundWebhooks = sender;
+
+  if (servicesApi.actionBus) {
+    bridgeLifecycleEvents(servicesApi.actionBus);
+    if (typeof servicesApi.actionBus.registerCommandRunner === 'function') {
+      servicesApi.actionBus.registerCommandRunner('webhook', (cmd, entry, payload) => sender.runAction(cmd, entry, payload));
+    }
+  }
+
+  if (!Array.isArray(servicesApi.commands)) servicesApi.commands = [];
+  servicesApi.commands.push(new WebhookCommand({ sender }));
+}
+
+module.exports = { initService, bridgeLifecycleEvents, enrichLifecyclePayload, formatOptionLegs, formatOptionLegPair };

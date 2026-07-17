@@ -11,6 +11,28 @@ function formatActionValue(value) {
   return String(value);
 }
 
+function parsePath(path) {
+  const raw = String(path || '').trim();
+  if (!raw) return [];
+  const parts = [];
+  raw.replace(/([^.[\]]+)|\[(\d+)\]/g, (_match, prop, index) => {
+    parts.push(index != null ? Number(index) : prop);
+    return '';
+  });
+  return parts;
+}
+
+function getPathValue(obj, path) {
+  const parts = parsePath(path);
+  if (!parts.length) return undefined;
+  let cur = obj;
+  for (const part of parts) {
+    if (cur == null) return undefined;
+    cur = cur[part];
+  }
+  return cur;
+}
+
 function stripSymbol(value) {
   const raw = String(value ?? '').trim();
   if (!raw) return '';
@@ -78,6 +100,45 @@ function distPtsPlus(a, b, extra, payload = {}) {
   return add(pts, extraPts);
 }
 
+function parseMaybeJson(value) {
+  if (typeof value !== 'string') return value;
+  const trimmed = value.trim();
+  if (!trimmed || !/^[\[{]/.test(trimmed)) return value;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return value;
+  }
+}
+
+function signedOptionLegQty(leg) {
+  const qty = Math.abs(Number(leg?.quantity ?? leg?.qty ?? 0));
+  const side = String(leg?.side || '').toLowerCase();
+  if (!Number.isFinite(qty) || qty <= 0) return 0;
+  return side === 'sell' || side === 'short' ? -qty : qty;
+}
+
+function optionLegToken(leg) {
+  if (!leg || typeof leg !== 'object') return '';
+  const qty = signedOptionLegQty(leg);
+  if (!qty) return '';
+  const optionCode = String(leg.option || '').toUpperCase().startsWith('P') ? 'P' : 'C';
+  const strike = leg.strike ?? leg.price ?? '';
+  return `${qty > 0 ? '+' : '-'}${Math.abs(qty)}${optionCode}${strike}`;
+}
+
+function optionLegs(legs) {
+  const list = parseMaybeJson(legs);
+  if (!Array.isArray(list)) return '';
+  return list.map(optionLegToken).filter(Boolean).join('/');
+}
+
+function optionLegPair(legs) {
+  const list = parseMaybeJson(legs);
+  if (!Array.isArray(list)) return '';
+  return list.map(leg => leg && typeof leg === 'object' ? leg.strike ?? leg.price ?? '' : '').filter(v => v !== '').join('/');
+}
+
 function createActionsBus(opts = {}) {
   const emitter = new EventEmitter();
   const namedStates = new Map(); // name -> { enabled, label }
@@ -97,6 +158,8 @@ function createActionsBus(opts = {}) {
   registerActionFunction('dist', dist);
   registerActionFunction('distPts', distPts);
   registerActionFunction('distPtsPlus', distPtsPlus);
+  registerActionFunction('optionLegs', optionLegs);
+  registerActionFunction('optionLegPair', optionLegPair);
 
   function getRunnerKey(name) {
     return typeof name === 'string' && name.trim()
@@ -226,7 +289,7 @@ function createActionsBus(opts = {}) {
     if (typeof template !== 'string') return '';
     if (!payload || typeof payload !== 'object') return template;
     return template.replace(/\{([^{}\s]+)\}/g, (match, key) => {
-      const value = payload[key];
+      const value = getPathValue(payload, key);
       return formatActionValue(value);
     });
   }
@@ -424,4 +487,4 @@ function createActionsBus(opts = {}) {
   };
 }
 
-module.exports = { createActionsBus, stripSymbol, add, dist, distPts, distPtsPlus };
+module.exports = { createActionsBus, stripSymbol, add, dist, distPts, distPtsPlus, getPathValue, optionLegs, optionLegPair };

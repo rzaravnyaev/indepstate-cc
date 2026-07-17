@@ -20,6 +20,7 @@
   "services/orderCalculator",
   "services/ngrok",
   "services/actions-bus",
+  "services/outboundWebhooks",
   "services/tvProxy",
   "services/tvListener",
   "services/tvAggregatorListener",

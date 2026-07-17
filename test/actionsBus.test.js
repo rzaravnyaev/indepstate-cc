@@ -28,7 +28,9 @@ function run() {
       ]
     },
     { event: 'foo', action: 'other:always-run' },
-    { event: 'foo', action: 'no-prefix-run' }
+    { event: 'foo', action: 'no-prefix-run' },
+    { event: 'legs', action: 'webhook:send is-simple-txt props=text:{legs[0].strike}/{legs[1].strike}' },
+    { event: 'legs-helper', action: 'webhook:send is-simple-txt props=text:optionLegs({legs})' }
   ]);
 
   let named = bus.listNamedActions();
@@ -59,6 +61,10 @@ function run() {
     executed.push(`other:${cmd}`);
     return { ok: true };
   });
+  bus.registerCommandRunner('webhook', (cmd) => {
+    executed.push(`webhook:${cmd}`);
+    return { ok: true };
+  });
 
   assert.deepStrictEqual(executed, [
     'cli:test AAA',
@@ -78,6 +84,8 @@ function run() {
 
   bus.emit('foo', { symbol: 'AAA' });
   bus.emit('bar', { symbol: 'AAA' });
+  bus.emit('legs', { legs: [{ option: 'PUT', side: 'buy', strike: 7290, quantity: 1 }, { option: 'PUT', side: 'sell', strike: 7280, quantity: 1 }] });
+  bus.emit('legs-helper', { legs: [{ option: 'PUT', side: 'buy', strike: 7290, quantity: 1 }, { option: 'PUT', side: 'sell', strike: 7280, quantity: 1 }] });
   assert.deepStrictEqual(executed, [
     'cli:test AAA',
     'cli:bar AAA',
@@ -93,7 +101,9 @@ function run() {
     'cli:test AAA',
     'other:always-run',
     'cli:no-prefix-run',
-    'cli:bar AAA'
+    'cli:bar AAA',
+    'webhook:send is-simple-txt props=text:7290/7280',
+    'webhook:send is-simple-txt props=text:+1P7290/-1P7280'
   ]);
 
   bus.setActionEnabled('Foo action', false);
@@ -116,6 +126,8 @@ function run() {
     'other:always-run',
     'cli:no-prefix-run',
     'cli:bar AAA',
+    'webhook:send is-simple-txt props=text:7290/7280',
+    'webhook:send is-simple-txt props=text:+1P7290/-1P7280',
     'other:always-run',
     'cli:no-prefix-run'
   ]);
@@ -134,6 +146,8 @@ function run() {
   assert.ok(bus.listActionFunctions().includes('stripSymbol'));
   assert.ok(bus.listActionFunctions().includes('add'));
   assert.ok(bus.listActionFunctions().includes('distPtsPlus'));
+  assert.ok(bus.listActionFunctions().includes('optionLegs'));
+  assert.ok(bus.listActionFunctions().includes('optionLegPair'));
   assert.ok(bus.listActionFunctions().includes('joinSymbolLevel'));
   assert.strictEqual(bus.unregisterActionFunction('joinSymbolLevel'), true);
   assert.ok(!bus.listActionFunctions().includes('joinSymbolLevel'));
