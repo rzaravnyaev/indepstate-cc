@@ -12,6 +12,21 @@ If a command fails (e.g. due to validation error), the entered text remains in t
 
 The service manifest exports `hookRenderer(ipcRenderer)` which the renderer calls on startup. This hook wires the shortcut handler into the UI. Other services can also provide a `hookRenderer` function in their manifest to register renderer-side behavior.
 
+## Alias templates
+
+`command-line.json` may define an `aliases` array. Alias matching applies to the first command token before normal command resolution. The template can include `{args}` to insert the remaining input arguments; when `{args}` is omitted, the remaining arguments are appended to the template.
+
+```json
+{
+  "shortcuts": [],
+  "aliases": [
+    { "enabled": true, "from": "u", "to": "lo ustec {args}" }
+  ]
+}
+```
+
+With this config, `u 28900` runs as `lo ustec 28900`.
+
 ## Commands
 
 ### add (alias: a)
