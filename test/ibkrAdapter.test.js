@@ -376,6 +376,116 @@ function ready(adapter, client, nextId = 100) {
   }
 
   {
+    const { adapter, client } = makeAdapter({
+      instruments: {},
+      quoteTimeoutMs: 2000,
+      contractResolution: { profileBySymbol: { ALNY: 'CFD' } },
+    });
+    ready(adapter, client, 94);
+    const promise = adapter.getQuote('ALNY');
+    await Promise.resolve();
+    emitContractDetails(client, client.contractDetailsRequests[0].reqId, {
+      conId: 54321,
+      symbol: 'ALNY',
+      secType: 'CFD',
+      exchange: 'SMART',
+      currency: 'USD',
+      localSymbol: 'ALNYn',
+      tradingClass: 'ALNY',
+    }, { minTick: 0.01 });
+    await Promise.resolve();
+    await Promise.resolve();
+    const reqId = client.marketDataRequests[0].reqId;
+    client.emit('rerouteMktDataReq', reqId, 12345, 'NASDAQ');
+    assert.strictEqual(client.marketDataRequests.length, 2);
+    assert.deepStrictEqual(client.cancelledMarketData, [reqId]);
+    assert.strictEqual(client.marketDataRequests[1].reqId, reqId);
+    assert.deepStrictEqual(client.marketDataRequests[1].contract, {
+      conId: 12345,
+      symbol: 'ALNY',
+      secType: 'STK',
+      exchange: 'NASDAQ',
+      currency: 'USD',
+      primaryExchange: 'NASDAQ',
+    });
+    client.emit('tickPrice', reqId, 4, 187.25);
+    const quote = await promise;
+    assert.strictEqual(quote.price, 187.25);
+    assert.strictEqual(quote.last, 187.25);
+    assert(adapter.logs.some(entry => entry.message === 'market data reroute requested' && entry.symbol === 'ALNY'));
+  }
+
+  {
+    const { adapter, client } = makeAdapter({
+      instruments: {},
+      quoteTimeoutMs: 20,
+      contractResolution: { profileBySymbol: { ALNY: 'CFD' } },
+    });
+    ready(adapter, client, 94);
+    const promise = adapter.getQuote('ALNY');
+    await Promise.resolve();
+    assert.deepStrictEqual(client.contractDetailsRequests[0].contract, { symbol: 'ALNY', secType: 'CFD', exchange: 'SMART', currency: 'USD' });
+    emitContractDetails(client, client.contractDetailsRequests[0].reqId, {
+      conId: 54321,
+      symbol: 'ALNY',
+      secType: 'CFD',
+      exchange: 'SMART',
+      currency: 'USD',
+      localSymbol: 'ALNYn',
+      tradingClass: 'ALNY',
+    }, { minTick: 0.01 });
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.strictEqual(client.marketDataRequests.length, 1);
+    const reqId = client.marketDataRequests[0].reqId;
+    assert.strictEqual(client.marketDataRequests[0].contract.secType, 'CFD');
+    client.emit('marketDataType', reqId, 1);
+    client.emit('rerouteMktDataReq', reqId, 12345, 'SMART');
+    client.emit('tickReqParams', reqId, 0.01, 'NASDAQ', 3);
+    client.emit('tickString', reqId, 45, 'diagnostic');
+    client.emit('tickGeneric', reqId, 49, 1.25);
+    client.emit('tickOptionComputation', reqId, 13, { canAutoExecute: true }, 0.2, 0.5, 1.5, 0, 0.1, 0.2, -0.03, 102.25);
+    const promise2 = adapter.getQuote('ALNY');
+    await Promise.resolve();
+    assert.strictEqual(client.marketDataRequests.length, 2);
+    assert.strictEqual(client.marketDataRequests[1].reqId, reqId);
+
+    const quote = await promise;
+    const quote2 = await promise2;
+    assert.strictEqual(quote, null);
+    assert.strictEqual(quote2, null);
+    assert.deepStrictEqual(client.cancelledMarketData, [reqId]);
+
+    const timeoutLogs = adapter.logs.filter(entry => entry.message === 'quote timeout' && entry.symbol === 'ALNY');
+    assert.strictEqual(timeoutLogs.length, 2);
+    assert(timeoutLogs.every(entry => entry.reqId === reqId));
+    assert.deepStrictEqual(timeoutLogs.map(entry => entry.waiterId).sort((a, b) => a - b), [1, 2]);
+    const diagnostic = timeoutLogs[0];
+    assert.strictEqual(diagnostic.profile, 'CFD');
+    assert.strictEqual(diagnostic.secType, 'CFD');
+    assert.strictEqual(diagnostic.conId, 54321);
+    assert.deepStrictEqual(diagnostic.activeMarketDataContract, {
+      conId: 12345,
+      symbol: 'ALNY',
+      secType: 'STK',
+      exchange: 'SMART',
+      currency: 'USD',
+    });
+    assert.strictEqual(diagnostic.requestedMarketDataType, 3);
+    assert.strictEqual(diagnostic.observedMarketDataType, 1);
+    assert.strictEqual(diagnostic.snapshotQuotes, false);
+    assert(diagnostic.elapsedMs >= 0);
+    assert.strictEqual(diagnostic.diagnosticCounts.marketDataType, 1);
+    assert.strictEqual(diagnostic.diagnosticCounts.rerouteMktDataReq, 1);
+    assert.strictEqual(diagnostic.diagnosticCounts.tickReqParams, 1);
+    assert.strictEqual(diagnostic.diagnosticCounts.tickString, 1);
+    assert.strictEqual(diagnostic.diagnosticCounts.tickGeneric, 1);
+    assert.strictEqual(diagnostic.diagnosticCounts.tickOptionComputation, 1);
+    assert.deepStrictEqual(diagnostic.diagnosticSamples.rerouteMktDataReq[0], { conId: 12345, exchange: 'SMART' });
+    assert.deepStrictEqual(diagnostic.diagnosticSamples.tickReqParams[0], { minTick: 0.01, bboExchange: 'NASDAQ', snapshotPermissions: 3 });
+  }
+
+  {
     const { adapter, client } = makeAdapter({ quoteTimeoutMs: 2000 });
     ready(adapter, client, 94);
     const promise = adapter.getQuote('AAPL');
@@ -396,6 +506,9 @@ function ready(adapter, client, nextId = 100) {
     assert.strictEqual(quote, null);
     assert.deepStrictEqual(client.cancelledMarketData, [client.marketDataRequests[0].reqId]);
     assert(adapter.logs.some(entry => entry.message === 'IBKR market data subscription missing or unavailable'));
+    const permissionLog = adapter.logs.find(entry => entry.message === 'IBKR market data subscription missing or unavailable');
+    assert.strictEqual(permissionLog.errorLabel, 'not-subscribed');
+    assert.strictEqual(permissionLog.diagnosticCounts.errors, 1);
 
     const retry = adapter.getQuote('AAPL');
     await Promise.resolve();
