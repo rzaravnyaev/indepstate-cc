@@ -54,6 +54,14 @@ const TICK_PRICE_FIELDS = Object.freeze({
   75: 'close', // delayed close
 });
 const MARKET_DATA_PERMISSION_CODES = new Set([354, 10167]);
+const MARKET_DATA_DIAGNOSTIC_ERROR_LABELS = Object.freeze({
+  354: 'not-subscribed',
+  10090: 'partial-data-or-missing-subscription',
+  10167: 'requested-market-data-not-subscribed',
+  10186: 'delayed-market-data-not-enabled',
+  10197: 'competing-live-session',
+});
+const QUOTE_DIAGNOSTIC_SAMPLE_LIMIT = 5;
 const PRIMARY_EXCHANGE_ALIASES = Object.freeze({
   NASDAQ: new Set(['NASDAQ', 'ISLAND', 'NMS']),
   NYSE: new Set(['NYSE']),
@@ -391,6 +399,12 @@ function loadStoqeyClientFactory() {
       tickPrice: EventName.tickPrice || 'tickPrice',
       tickSize: EventName.tickSize || 'tickSize',
       tickSnapshotEnd: EventName.tickSnapshotEnd || 'tickSnapshotEnd',
+      marketDataType: EventName.marketDataType || 'marketDataType',
+      rerouteMktDataReq: EventName.rerouteMktDataReq || 'rerouteMktDataReq',
+      tickReqParams: EventName.tickReqParams || 'tickReqParams',
+      tickString: EventName.tickString || 'tickString',
+      tickGeneric: EventName.tickGeneric || 'tickGeneric',
+      tickOptionComputation: EventName.tickOptionComputation || 'tickOptionComputation',
       connectionClosed: EventName.connectionClosed || 'connectionClosed',
     },
     create(config) {
@@ -432,6 +446,7 @@ class IBKRAdapter extends ExecutionAdapter {
     this.contractRequests = new Map();
     this.resolvedContracts = new Map();
     this.nextQuoteReqId = Number.isInteger(Number(this.cfg.quoteReqIdStart)) ? Number(this.cfg.quoteReqIdStart) : 900000000;
+    this.nextQuoteWaiterId = 1;
     this.nextContractReqId = Number.isInteger(Number(this.cfg.contractReqIdStart)) ? Number(this.cfg.contractReqIdStart) : 800000000;
     this.logs = [];
 
@@ -506,6 +521,23 @@ class IBKRAdapter extends ExecutionAdapter {
     on('tickPrice', (reqId, tickType, price, attribs) => this.#handleTickPrice(reqId, tickType, price, attribs));
     on('tickSize', (reqId, tickType, size) => this.#handleTickSize(reqId, tickType, size));
     on('tickSnapshotEnd', reqId => this.#handleTickSnapshotEnd(reqId));
+    on('marketDataType', (reqId, marketDataType) => this.#handleMarketDataType(reqId, marketDataType));
+    on('rerouteMktDataReq', (reqId, conId, exchange) => this.#handleRerouteMktDataReq(reqId, conId, exchange));
+    on('tickReqParams', (reqId, minTick, bboExchange, snapshotPermissions) => this.#handleTickReqParams(reqId, minTick, bboExchange, snapshotPermissions));
+    on('tickString', (reqId, tickType, value) => this.#handleQuoteDiagnosticEvent(reqId, 'tickString', { tickType: Number(tickType), value }));
+    on('tickGeneric', (reqId, tickType, value) => this.#handleQuoteDiagnosticEvent(reqId, 'tickGeneric', { tickType: Number(tickType), value: finiteNumber(value) }));
+    on('tickOptionComputation', (reqId, tickType, tickAttrib, impliedVol, delta, optPrice, pvDividend, gamma, vega, theta, undPrice) => this.#handleQuoteDiagnosticEvent(reqId, 'tickOptionComputation', {
+      tickType: Number(tickType),
+      tickAttrib: safeClone(tickAttrib),
+      impliedVol: finiteNumber(impliedVol),
+      delta: finiteNumber(delta),
+      optPrice: finiteNumber(optPrice),
+      pvDividend: finiteNumber(pvDividend),
+      gamma: finiteNumber(gamma),
+      vega: finiteNumber(vega),
+      theta: finiteNumber(theta),
+      undPrice: finiteNumber(undPrice),
+    }));
     on('connectionClosed', () => this.#handleDisconnected('connectionClosed'));
     on('error', (err, code, reqId) => this.#handleIbError(err, code, reqId));
     if (typeof this.client.once === 'function') {
@@ -582,7 +614,9 @@ class IBKRAdapter extends ExecutionAdapter {
     const key = String(reqId);
     if (this.quoteRequests.has(key)) {
       const isPermission = MARKET_DATA_PERMISSION_CODES.has(Number(code));
-      this.#log('error', isPermission ? 'IBKR market data subscription missing or unavailable' : 'market data error', { provider: this.provider, reqId, code, message });
+      const rec = this.quoteRequests.get(key);
+      this.#appendQuoteDiagnosticSample(rec, 'errors', { code: Number(code), label: MARKET_DATA_DIAGNOSTIC_ERROR_LABELS[Number(code)] || 'market-data-error', message });
+      this.#log('error', isPermission ? 'IBKR market data subscription missing or unavailable' : 'market data error', this.#quoteDiagnosticContext(rec, { reqId: Number(reqId), code, errorLabel: MARKET_DATA_DIAGNOSTIC_ERROR_LABELS[Number(code)] || 'market-data-error', errorMessage: message }));
       this.#resolveQuote(key, null, isPermission ? 'permission-error' : 'error');
     }
     if (this.contractRequests.has(key)) {
@@ -716,6 +750,79 @@ class IBKRAdapter extends ExecutionAdapter {
     return out;
   }
 
+  #appendQuoteDiagnosticSample(rec, key, sample) {
+    if (!rec?.raw || !key) return;
+    if (!Array.isArray(rec.raw[key])) rec.raw[key] = [];
+    rec.raw[key].push(safeClone(sample));
+    if (rec.raw[key].length > QUOTE_DIAGNOSTIC_SAMPLE_LIMIT) rec.raw[key].shift();
+  }
+
+  #quoteDiagnosticCounts(rec) {
+    const raw = rec?.raw || {};
+    return {
+      tickPrice: Array.isArray(raw.tickPrice) ? raw.tickPrice.length : 0,
+      tickSize: Array.isArray(raw.tickSize) ? raw.tickSize.length : 0,
+      marketDataType: Array.isArray(raw.marketDataType) ? raw.marketDataType.length : 0,
+      rerouteMktDataReq: Array.isArray(raw.rerouteMktDataReq) ? raw.rerouteMktDataReq.length : 0,
+      tickReqParams: Array.isArray(raw.tickReqParams) ? raw.tickReqParams.length : 0,
+      tickString: Array.isArray(raw.tickString) ? raw.tickString.length : 0,
+      tickGeneric: Array.isArray(raw.tickGeneric) ? raw.tickGeneric.length : 0,
+      tickOptionComputation: Array.isArray(raw.tickOptionComputation) ? raw.tickOptionComputation.length : 0,
+      errors: Array.isArray(raw.errors) ? raw.errors.length : 0,
+    };
+  }
+
+  #quoteDiagnosticSamples(rec) {
+    const raw = rec?.raw || {};
+    const samples = {};
+    for (const key of ['tickPrice', 'tickSize', 'marketDataType', 'rerouteMktDataReq', 'tickReqParams', 'tickString', 'tickGeneric', 'tickOptionComputation', 'errors']) {
+      if (Array.isArray(raw[key]) && raw[key].length) samples[key] = safeClone(raw[key].slice(-QUOTE_DIAGNOSTIC_SAMPLE_LIMIT));
+    }
+    return samples;
+  }
+
+  #quoteDiagnosticContext(rec, extra = {}) {
+    const startedAt = Number(rec?.startedAt);
+    const elapsedMs = Number.isFinite(startedAt) ? Date.now() - startedAt : undefined;
+    const context = {
+      provider: this.provider,
+      reqId: Number(rec?.reqId ?? extra.reqId),
+      symbol: rec?.symbol,
+      profile: rec?.profile,
+      contract: safeContractSummary(rec?.contract),
+      activeMarketDataContract: rec?.activeMarketDataContract ? safeContractSummary(rec.activeMarketDataContract) : undefined,
+      secType: normalizeString(rec?.contract?.secType).toUpperCase() || undefined,
+      conId: rec?.contract?.conId,
+      requestedMarketDataType: rec?.raw?.marketDataTypeRequested,
+      observedMarketDataType: rec?.raw?.observedMarketDataType,
+      snapshotQuotes: rec?.raw?.snapshot,
+      elapsedMs,
+      waiterCount: Array.isArray(rec?.waiters) ? rec.waiters.length : 0,
+      diagnosticCounts: this.#quoteDiagnosticCounts(rec),
+      diagnosticSamples: this.#quoteDiagnosticSamples(rec),
+      ...extra,
+    };
+    for (const key of Object.keys(context)) {
+      if (context[key] === undefined || context[key] === null || context[key] === '') delete context[key];
+    }
+    if (context.diagnosticSamples && Object.keys(context.diagnosticSamples).length === 0) delete context.diagnosticSamples;
+    return context;
+  }
+
+  #buildReroutedMarketDataContract(rec, reroute) {
+    const conId = Number(reroute?.conId);
+    if (!Number.isInteger(conId) || conId <= 0) return null;
+    const exchange = normalizeString(reroute?.exchange) || normalizeString(rec?.contract?.exchange) || 'SMART';
+    return normalizeContract({
+      conId,
+      symbol: rec?.contract?.symbol || rec?.symbol,
+      secType: normalizeString(rec?.contract?.secType).toUpperCase() === 'CFD' ? 'STK' : rec?.contract?.secType,
+      exchange,
+      currency: rec?.contract?.currency,
+      primaryExchange: exchange === 'SMART' ? rec?.contract?.primaryExchange : exchange,
+    });
+  }
+
   #cancelQuoteRequest(reqId) {
     if (!this.client || typeof this.client.cancelMktData !== 'function') return;
     try {
@@ -732,7 +839,7 @@ class IBKRAdapter extends ExecutionAdapter {
     if (quote) {
       const waiters = rec.waiters || [];
       if (!waiters.length) return;
-      this.#log('info', 'quote resolved', { provider: this.provider, reqId: Number(key), symbol: rec.symbol, price: quote.price, bid: quote.bid, ask: quote.ask, last: quote.last, close: quote.close, tickSize: quote.tickSize });
+      this.#log('info', 'quote resolved', this.#quoteDiagnosticContext(rec, { price: quote.price, bid: quote.bid, ask: quote.ask, last: quote.last, close: quote.close, tickSize: quote.tickSize }));
       rec.waiters = [];
       for (const waiter of waiters) {
         clearTimeout(waiter.timer);
@@ -757,7 +864,7 @@ class IBKRAdapter extends ExecutionAdapter {
       }
       rec.waiters = [];
     }
-    this.#log(reason === 'timeout' ? 'error' : 'error', reason === 'timeout' ? 'quote timeout' : 'quote unavailable', { provider: this.provider, reqId: Number(key), symbol: rec.symbol, reason });
+    this.#log(reason === 'timeout' ? 'error' : 'error', reason === 'timeout' ? 'quote timeout' : 'quote unavailable', this.#quoteDiagnosticContext(rec, { reason }));
   }
 
   #waitForQuote(reqId) {
@@ -767,15 +874,16 @@ class IBKRAdapter extends ExecutionAdapter {
     const quote = this.#normalizedQuote(rec);
     if (quote) return Promise.resolve(quote);
     return new Promise(resolve => {
-      const waiter = { resolve, timer: null };
+      const waiter = { id: this.nextQuoteWaiterId++, resolve, timer: null };
       waiter.timer = setTimeout(() => {
         const live = this.quoteRequests.get(key);
         if (!live) {
           resolve(null);
           return;
         }
+        const waiterCountBefore = Array.isArray(live.waiters) ? live.waiters.length : 0;
         live.waiters = (live.waiters || []).filter(w => w !== waiter);
-        this.#log('error', 'quote timeout', { provider: this.provider, reqId: Number(key), symbol: live.symbol, reason: 'timeout' });
+        this.#log('error', 'quote timeout', this.#quoteDiagnosticContext(live, { reason: 'timeout', waiterId: waiter.id, waiterCount: waiterCountBefore, remainingWaiterCount: live.waiters.length }));
         resolve(null);
       }, this.cfg.quoteTimeoutMs);
       rec.waiters.push(waiter);
@@ -787,7 +895,8 @@ class IBKRAdapter extends ExecutionAdapter {
     this.quoteRequests.set(key, rec);
     this.quoteRequestsBySymbol.set(rec.quoteKey, key);
     try {
-      this.client.reqMktData(reqId, rec.contract, '', this.cfg.snapshotQuotes === true, false, []);
+      rec.activeMarketDataContract = rec.contract;
+      this.client.reqMktData(reqId, rec.activeMarketDataContract, '', this.cfg.snapshotQuotes === true, false, []);
     } catch (err) {
       this.#log('error', 'reqMktData failed', { provider: this.provider, reqId, symbol: rec.symbol, message: err?.message || String(err) });
       this.#closeQuoteStream(key, 'request-error');
@@ -811,6 +920,56 @@ class IBKRAdapter extends ExecutionAdapter {
     const rec = this.quoteRequests.get(key);
     if (!rec) return;
     rec.raw.tickSize.push({ tickType: Number(tickType), size: finiteNumber(size) });
+  }
+
+  #handleMarketDataType(reqId, marketDataType) {
+    const key = String(reqId);
+    const rec = this.quoteRequests.get(key);
+    if (!rec) return;
+    const type = Number(marketDataType);
+    rec.raw.observedMarketDataType = type;
+    this.#appendQuoteDiagnosticSample(rec, 'marketDataType', { marketDataType: type });
+    this.#log('info', 'market data type received', this.#quoteDiagnosticContext(rec, { marketDataType: type }));
+  }
+
+  #handleRerouteMktDataReq(reqId, conId, exchange) {
+    const key = String(reqId);
+    const rec = this.quoteRequests.get(key);
+    if (!rec) return;
+    const sample = { conId: Number(conId), exchange: normalizeString(exchange) };
+    this.#appendQuoteDiagnosticSample(rec, 'rerouteMktDataReq', sample);
+    this.#log('info', 'market data reroute received', this.#quoteDiagnosticContext(rec, { reroute: sample }));
+    if (rec.reroutedMarketData === true) return;
+    const reroutedContract = this.#buildReroutedMarketDataContract(rec, sample);
+    if (!reroutedContract) {
+      this.#log('error', 'market data reroute ignored', this.#quoteDiagnosticContext(rec, { reason: 'invalid-reroute-contract', reroute: sample }));
+      return;
+    }
+    rec.reroutedMarketData = true;
+    rec.activeMarketDataContract = reroutedContract;
+    this.#cancelQuoteRequest(key);
+    try {
+      this.client.reqMktData(Number(reqId), reroutedContract, '', this.cfg.snapshotQuotes === true, false, []);
+      this.#log('info', 'market data reroute requested', this.#quoteDiagnosticContext(rec, { reroute: sample, reroutedContract: safeContractSummary(reroutedContract) }));
+    } catch (err) {
+      this.#log('error', 'market data reroute failed', this.#quoteDiagnosticContext(rec, { reroute: sample, message: err?.message || String(err) }));
+      this.#resolveQuote(key, null, 'reroute-request-error');
+    }
+  }
+
+  #handleTickReqParams(reqId, minTick, bboExchange, snapshotPermissions) {
+    const key = String(reqId);
+    const rec = this.quoteRequests.get(key);
+    if (!rec) return;
+    const sample = { minTick: finiteNumber(minTick), bboExchange: normalizeString(bboExchange), snapshotPermissions: finiteNumber(snapshotPermissions) };
+    this.#appendQuoteDiagnosticSample(rec, 'tickReqParams', sample);
+    this.#log('info', 'tick request params received', this.#quoteDiagnosticContext(rec, { tickReqParams: sample }));
+  }
+
+  #handleQuoteDiagnosticEvent(reqId, key, sample) {
+    const rec = this.quoteRequests.get(String(reqId));
+    if (!rec) return;
+    this.#appendQuoteDiagnosticSample(rec, key, sample);
   }
 
   #handleTickSnapshotEnd(reqId) {
@@ -936,8 +1095,32 @@ class IBKRAdapter extends ExecutionAdapter {
     const reqKey = String(reqId);
     const marketDataType = Number(this.cfg.marketDataType);
     const tickSize = contractRecord.tickSize || positiveNumber(this.cfg.defaultTickSize);
+    const quoteRec = {
+      reqId,
+      symbol: key,
+      quoteKey,
+      profile: contractRecord.profile?.name,
+      contract,
+      tickSize,
+      startedAt: Date.now(),
+      quote: {},
+      raw: {
+        tickPrice: [],
+        tickSize: [],
+        marketDataType: [],
+        rerouteMktDataReq: [],
+        tickReqParams: [],
+        tickString: [],
+        tickGeneric: [],
+        tickOptionComputation: [],
+        errors: [],
+        marketDataTypeRequested: marketDataType,
+        snapshot: this.cfg.snapshotQuotes === true,
+      },
+      waiters: [],
+    };
 
-    this.#log('info', 'quote request started', { provider: this.provider, reqId, symbol: key, contract: safeContractSummary(contract), marketDataType });
+    this.#log('info', 'quote request started', this.#quoteDiagnosticContext(quoteRec, { marketDataType }));
     if (typeof this.client.reqMarketDataType === 'function') {
       try {
         this.client.reqMarketDataType(marketDataType);
@@ -946,16 +1129,7 @@ class IBKRAdapter extends ExecutionAdapter {
       }
     }
 
-    this.#startQuoteStream(reqId, {
-      reqId,
-      symbol: key,
-      quoteKey,
-      contract,
-      tickSize,
-      quote: {},
-      raw: { tickPrice: [], tickSize: [], marketDataType, snapshot: this.cfg.snapshotQuotes === true },
-      waiters: [],
-    });
+    this.#startQuoteStream(reqId, quoteRec);
     return this.#waitForQuote(reqKey);
   }
 
