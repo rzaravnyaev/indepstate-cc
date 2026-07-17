@@ -10,8 +10,10 @@ settings.register(
 );
 
 function initService(servicesApi = {}) {
+  const { config } = settings.readConfig('command-line') || {};
   const cmdService = createCommandService({
     commands: servicesApi.commands,
+    aliases: config && config.aliases,
     onAdd(row) {
       const win = BrowserWindow.getAllWindows()[0];
       if (win && !win.isDestroyed()) {
