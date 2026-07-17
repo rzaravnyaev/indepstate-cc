@@ -93,6 +93,11 @@ class CCXTExecutionAdapter extends ExecutionAdapter {
     this._entryClientToBracket = new Map();
     this._algoClientToBracket = new Map();
     this._bracketEntryWatchers = new Map();
+    this.protectiveOrders = {
+      manualModificationStrategy: ['adopt', 'stop-managing'].includes(String(cfg.protectiveOrders?.manualModificationStrategy || '').toLowerCase())
+        ? String(cfg.protectiveOrders.manualModificationStrategy).toLowerCase()
+        : 'adopt'
+    };
     this._reconcileTimer = setInterval(() => { this._reconcileBrackets().catch(() => {}); }, Math.max(5000, Number(cfg.bracketReconcileMs) || 10000));
 
     // Binance USDⓈ-M REST helpers
@@ -829,6 +834,65 @@ class CCXTExecutionAdapter extends ExecutionAdapter {
     }
     return { takeProfitPrice: entry - tpPts * tick, stopLossPrice: entry + slPts * tick, source: 'points' };
   }
+
+  _extractProtectiveOrderPrice(order = {}) {
+    const raw = order.triggerPrice ?? order.stopPrice ?? order.price ?? order.info?.triggerPrice ?? order.info?.stopPrice ?? order.info?.price;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : undefined;
+  }
+
+  _protectiveOrderPriceMatches(expected, actual, tickSize) {
+    const exp = Number(expected);
+    const act = Number(actual);
+    if (!Number.isFinite(exp) || !Number.isFinite(act)) return true;
+    const tick = Number(tickSize);
+    const tolerance = Number.isFinite(tick) && tick > 0 ? tick / 2 : 1e-9;
+    return Math.abs(exp - act) <= tolerance;
+  }
+
+  _handleManualProtectiveOrderModification(bracket, leg, openOrder, actualPrice) {
+    const expectedKey = leg === 'tp' ? 'takeProfitPrice' : 'stopLossPrice';
+    const expectedPrice = bracket?.[expectedKey];
+    const strategy = this.protectiveOrders?.manualModificationStrategy || 'adopt';
+    const log = {
+      bracketId: bracket.bracketId,
+      symbol: bracket.symbol,
+      leg,
+      clientAlgoId: leg === 'tp' ? bracket.tpClientAlgoId : bracket.slClientAlgoId,
+      expectedPrice,
+      brokerPrice: String(actualPrice),
+      strategy
+    };
+    if (strategy === 'stop-managing') {
+      bracket.status = 'EXTERNALLY_MODIFIED';
+      bracket.externalModification = { leg, expectedPrice, brokerPrice: String(actualPrice), clientAlgoId: log.clientAlgoId, detectedAt: Date.now() };
+      bracket.updatedAt = Date.now();
+      console.warn(`[${this.provider}] Protective order manually modified; stopping bracket auto-management`, log);
+      this.events.emit('bracket:protection_modified', { provider: this.provider, ...log, action: 'stop-managing' });
+      return;
+    }
+    bracket[expectedKey] = String(actualPrice);
+    bracket.externalModification = { leg, previousExpectedPrice: expectedPrice, brokerPrice: String(actualPrice), clientAlgoId: log.clientAlgoId, detectedAt: Date.now(), adopted: true };
+    bracket.updatedAt = Date.now();
+    console.warn(`[${this.provider}] Protective order manually modified; adopting broker price`, log);
+    this.events.emit('bracket:protection_modified', { provider: this.provider, ...log, action: 'adopt' });
+  }
+
+  _detectManualProtectiveOrderModifications(bracket, openOrders = []) {
+    const byId = new Map((Array.isArray(openOrders) ? openOrders : []).map((x) => [String(x?.clientAlgoId || ''), x]));
+    for (const leg of ['tp', 'sl']) {
+      const id = leg === 'tp' ? bracket.tpClientAlgoId : bracket.slClientAlgoId;
+      if (!id) continue;
+      const openOrder = byId.get(String(id));
+      if (!openOrder) continue;
+      const actualPrice = this._extractProtectiveOrderPrice(openOrder);
+      const expectedPrice = leg === 'tp' ? bracket.takeProfitPrice : bracket.stopLossPrice;
+      if (!this._protectiveOrderPriceMatches(expectedPrice, actualPrice, bracket.tickSize)) {
+        this._handleManualProtectiveOrderModification(bracket, leg, openOrder, actualPrice);
+      }
+    }
+  }
+
   async _placeBinanceBracketEntry({ order, symbol, side, amount, price, params, cid }) {
     const now = Date.now();
     const bracketId = String(order.bracketId || order.strategyId || cid || crypto.randomBytes(6).toString('hex'));
@@ -1829,6 +1893,9 @@ class CCXTExecutionAdapter extends ExecutionAdapter {
       } catch {}
       let open = [];
       try { open = await this._binanceSignedRequest('GET', '/fapi/v1/openAlgoOrders', { symbol: b.symbol }); } catch {}
+      this._detectManualProtectiveOrderModifications(b, open);
+      if (b.status === 'EXTERNALLY_MODIFIED') continue;
+
       const set = new Set((open || []).map((x) => String(x.clientAlgoId || '')));
 
       if (['PROTECTED','CLOSING','ENTRY_FILLED','ERROR'].includes(b.status) && posAmt === 0) { await this.cancelBracketProtection(b.bracketId); b.status = 'CLOSED'; b.updatedAt = Date.now(); continue; }

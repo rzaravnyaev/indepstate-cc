@@ -64,7 +64,13 @@ Command templates can call small registered helper functions:
 
 Function arguments are resolved from payload placeholders before invocation. The built-in
 `stripSymbol(value)` helper trims a TradingView-style symbol and removes the exchange prefix before
-`:`, so `NYSE:AAA` becomes `AAA`; symbols without a prefix pass through unchanged.
+`:`, so `NYSE:AAA` becomes `AAA`; symbols without a prefix pass through unchanged. The built-in
+`add(a, b, ...)` helper converts arguments to numbers and returns a precision-stable sum. The built-in
+`dist(a, b)` helper converts both arguments to numbers and returns their absolute price difference.
+`distPts(a, b)` converts that absolute price difference to points using the points/tick-size service and
+the action payload symbol, which is useful for templates such as `stopOffsetPts:distPts({price},{rayPrice})`.
+`distPtsPlus(a, b, extra)` does the same conversion and adds an extra point value in one direct helper
+call, avoiding unsupported nested expressions.
 
 The expression layer is intentionally small: it supports direct calls such as
 `functionName({field})` or `functionName({a}, {b})`. It does not execute JavaScript and does not
@@ -105,3 +111,69 @@ updated state so the UI re-renders. When no named actions exist the container re
 
 Service-specific integrations are documented alongside each service module. For TradingView
 automation, see the [tv-listener service notes](tv-listener.md).
+
+## Example: automatic level-order and order-card creation from TradingView line events
+
+The following config creates two named actions that listen to TradingView horizontal-line events and
+automatically generate order cards via the command line:
+
+```json
+{
+  "enabled": true,
+  "actions": [
+    {
+      "name": "TV LO",
+      "label": "TV LO",
+      "bindings": [
+        {
+          "event": "tv-tool-horzline-ray",
+          "action": "commandLine:lo stripSymbol({symbol}) {price} props=stopOffsetPts:distPtsPlus({price},{rayPrice}, 1);producingLineId:{lineId}"
+        },
+        {
+          "event": "tv-tool-horzline-remove",
+          "action": "commandLine:rm producingLineId:{lineId}"
+        }
+      ]
+    },
+    {
+      "name": "TV OC",
+      "label": "TV OC",
+      "bindings": [
+        {
+          "event": "tv-tool-horzline-ray",
+          "action": "commandLine:l distPtsPlus({price},{rayPrice}, 1) props=producingLineId:{lineId}"
+        },
+        {
+          "event": "tv-tool-horzline-remove",
+          "action": "commandLine:rm producingLineId:{lineId}"
+        }
+      ]
+    }
+  ]
+}
+```
+
+### How it works
+
+Both actions subscribe to the same pair of TradingView line events:
+
+| Event | Trigger |
+|---|---|
+| `tv-tool-horzline-ray` | A horizontal line and ray is drawn on the TradingView chart |
+| `tv-tool-horzline-remove` | That line is deleted from the chart |
+
+**TV LO** — level-order card creation:
+- On draw: runs `lo <symbol> <price> props=stopOffsetPts:<dist+1pts>;producingLineId:<lineId>`.
+  - `stripSymbol({symbol})` strips the exchange prefix (e.g. `NYSE:AAPL` → `AAPL`).
+  - `distPtsPlus({price},{rayPrice}, 1)` computes the distance between the level price and the ray anchor price in points, then adds 1 point — used as the `stopOffsetPts` override so the stop is just beyond the line.
+  - `producingLineId:{lineId}` tags the card with the TV line ID so it can be cancelled by line removal.
+- On remove: runs `rm producingLineId:<lineId>` to cancel the level-order card tied to that line.
+
+**TV OC** — plain order card creation (no symbol context, price-distance sizing):
+- On draw: runs `l <distPtsPlus> props=producingLineId:<lineId>`.
+  - Passes the price distance (line-to-ray, +1 pt) as the first positional argument to the `l` command.
+  - Attaches the line ID for later removal.
+- On remove: same `rm` cleanup as TV LO.
+
+Both actions appear as independent toggles in the toolbar, so either can be enabled/disabled at
+runtime without touching the config file.
