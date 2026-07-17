@@ -893,6 +893,9 @@ function setCardState(key, state) {
         const reqId = card.dataset.reqId;
         const currentRow = appState.rows.find(r => rowKey(r) === key);
         if (currentRow?.cardType === 'levelOrder') {
+          if (!reqId) {
+            for (const group of levelOrderGroupsByKey(key)) cancelLevelOrderTerminalOrders(group, currentRow);
+          }
           if (reqId) ipcRenderer.invoke('execution:stop-retry', reqId).catch(() => {});
           if (reqId) {
             pendingByReqId.delete(reqId);
@@ -2464,16 +2467,31 @@ function clearLevelOrderGroup(parentReqId) {
       pendingIdByReqId.delete(childReqId);
       retryCounts.delete(childReqId);
     }
-    for (const ticket of group.tickets) levelOrderTicketToGroup.delete(ticket);
+    for (const ticket of group.tickets) {
+      levelOrderTicketToGroup.delete(ticket);
+      ticketToKey.delete(ticket);
+    }
   }
   for (const [pendingId, parent] of levelOrderPendingToGroup.entries()) {
     if (parent === parentReqId) levelOrderPendingToGroup.delete(pendingId);
   }
 }
 
+function levelOrderGroupsByKey(key) {
+  return Array.from(levelOrderGroups.values()).filter(group => group.key === key);
+}
+
 function clearLevelOrderByKey(key) {
-  for (const [parentReqId, group] of Array.from(levelOrderGroups.entries())) {
-    if (group.key === key) clearLevelOrderGroup(parentReqId);
+  for (const group of levelOrderGroupsByKey(key)) clearLevelOrderGroup(group.parentRequestId);
+}
+
+function cancelLevelOrderTerminalOrders(group, row) {
+  if (!group) return;
+  const provider = row?.provider || '';
+  const symbol = row?.symbol || row?.ticker || '';
+  for (const ticket of group.tickets) {
+    if (group.openedTickets.has(ticket)) continue;
+    ipcRenderer.invoke('execution:cancel-order', { provider, ticket, symbol }).catch(() => {});
   }
 }
 
@@ -3152,10 +3170,12 @@ ipcRenderer.on('order:cancelled', (_evt, rec) => {
   const levelGroup = levelOrderGroups.get(levelOrderTicketToGroup.get(ticket));
   const key = levelGroup?.key || ticketToKey.get(ticket);
   if (key) {
+    const row = state.rows.find(r => rowKey(r) === key);
     ticketToKey.delete(ticket);
-    if (levelGroup) {
-      levelGroup.closedTickets.add(ticket);
-      if (!levelOrderAllClosed(levelGroup)) return;
+    if (levelGroup || row?.cardType === 'levelOrder' || levelOrderGroupsByKey(key).length > 0) {
+      if (levelGroup) levelGroup.tickets.delete(ticket);
+      levelOrderTicketToGroup.delete(ticket);
+      return;
     }
     placedOrderByKey.delete(key);
     removeRowByKey(key);

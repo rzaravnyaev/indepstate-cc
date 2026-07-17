@@ -53,6 +53,7 @@ async function run() {
 
   const renderer = require('../app/renderer.js');
   const t = renderer.__testing;
+  await new Promise(resolve => setTimeout(resolve, 0));
   t.setLevelOrderConfig({
     defaults: { riskUsd: 50, maxLot: 3, stopOffsetPts: 4, takeProfitPts: 12 },
     symbols: []
@@ -153,6 +154,11 @@ async function run() {
   assert.strictEqual(t.levelOrderGroups.get(parentRequestId).placedReqIds.size, 2);
   assert.strictEqual(t.levelOrderGroups.get(parentRequestId).total, 2);
   assert.strictEqual(t.cardStates.get(key), 'pending-exec');
+  assert(t.state.rows.some(r => r.ticker === 'TST'));
+
+  handlers['order:cancelled'](null, { ticket: 'ticket-1', provider: 'simulated' });
+  assert(t.state.rows.some(r => r.ticker === 'TST'));
+  assert.strictEqual(t.cardStates.get(key), 'pending-exec');
 
   handlers['position:opened'](null, {
     ticket: 'position-1',
@@ -213,6 +219,74 @@ async function run() {
   assert.strictEqual(t.levelOrderGroups.has(parentRequestId2), false);
   assert.strictEqual(t.levelOrderChildToGroup.has(`${parentRequestId2}_1`), false);
   assert.strictEqual(t.levelOrderPendingToGroup.has('cid-3'), false);
+
+  const row3 = { cardType: 'levelOrder', ticker: 'TST3', event: 'levelOrder', time: 2, level: 100, provider: 'simulated', instrumentType: 'EQ' };
+  t.instrumentInfo.set('TST3', { bid: 101, ask: 102, price: 101.5, tickSize: 0.5 });
+  handlers['orders:new'](null, row3);
+  const key3 = t.rowKey(row3);
+  let card3 = t.cardByKey(key3);
+  card3.querySelector('button.btn[data-kind="LB"]').click();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  const call3 = calls.filter(c => c.ch === 'level-order:place').at(-1);
+  const parentRequestId3 = call3.payload.requestId;
+  handlers['execution:result'](null, {
+    reqId: `${parentRequestId3}_1`,
+    provider: 'simulated',
+    status: 'ok',
+    providerOrderId: 'ticket-3',
+    order: {
+      symbol: 'TST3',
+      side: 'buy',
+      qty: 1,
+      meta: { requestId: `${parentRequestId3}_1`, parentRequestId: parentRequestId3, childCount: 2 }
+    }
+  });
+  handlers['execution:result'](null, {
+    reqId: `${parentRequestId3}_2`,
+    provider: 'simulated',
+    status: 'ok',
+    providerOrderId: 'ticket-4',
+    order: {
+      symbol: 'TST3',
+      side: 'buy',
+      qty: 2,
+      meta: { requestId: `${parentRequestId3}_2`, parentRequestId: parentRequestId3, childCount: 2 }
+    }
+  });
+  assert.strictEqual(t.cardStates.get(key3), 'pending-exec');
+  card3 = t.cardByKey(key3);
+  card3.querySelector('.card__status').click();
+  assert(calls.find(c => c.ch === 'execution:stop-retry' && c.payload === parentRequestId3));
+  assert.strictEqual(t.cardStates.get(key3), undefined);
+  handlers['order:cancelled'](null, { ticket: 'ticket-3', provider: 'simulated' });
+  handlers['order:cancelled'](null, { ticket: 'ticket-4', provider: 'simulated' });
+  assert(t.cardByKey(key3));
+
+  const row4 = { cardType: 'levelOrder', ticker: 'TST4', event: 'levelOrder', time: 3, level: 100, provider: 'simulated', instrumentType: 'EQ' };
+  t.instrumentInfo.set('TST4', { bid: 101, ask: 102, price: 101.5, tickSize: 0.5 });
+  handlers['orders:new'](null, row4);
+  const key4 = t.rowKey(row4);
+  let card4 = t.cardByKey(key4);
+  card4.querySelector('button.btn[data-kind="LB"]').click();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  const call4 = calls.filter(c => c.ch === 'level-order:place').at(-1);
+  const parentRequestId4 = call4.payload.requestId;
+  handlers['execution:result'](null, {
+    reqId: `${parentRequestId4}_1`,
+    provider: 'simulated',
+    status: 'ok',
+    providerOrderId: 'ticket-5',
+    order: {
+      symbol: 'TST4',
+      side: 'buy',
+      qty: 1,
+      meta: { requestId: `${parentRequestId4}_1`, parentRequestId: parentRequestId4, childCount: 1 }
+    }
+  });
+  card4 = t.cardByKey(key4);
+  delete card4.dataset.reqId;
+  card4.querySelector('.card__status').click();
+  assert(calls.find(c => c.ch === 'execution:cancel-order' && c.payload.ticket === 'ticket-5'));
 
   Module._load = originalLoad;
   console.log('levelOrderRenderer tests passed');
