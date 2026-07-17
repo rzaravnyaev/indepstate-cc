@@ -2989,6 +2989,14 @@ ipcRenderer.on('orders:new', (_evt, row) => {
       if (row.price != null) patch.price = String(row.price);
       if (row.sl != null) patch.sl = String(row.sl);
       if (row.tp != null) patch.tp = String(row.tp);
+      if (row.cardType === 'levelOrder') {
+        if (row.level != null) patch.level = String(row.level);
+        if (row.riskUsd != null) patch.risk = String(row.riskUsd);
+        if (row.stopOffsetPts != null) patch.stopOffsetPts = String(row.stopOffsetPts);
+        if (row.maxLot != null) patch.maxLot = String(row.maxLot);
+        if (row.takeProfitPts != null) patch.takeProfitPts = String(row.takeProfitPts);
+        if (row.pointSize != null) patch.pointSize = String(row.pointSize);
+      }
       return patch;
     }
   });
