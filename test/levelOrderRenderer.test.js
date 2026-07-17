@@ -180,6 +180,16 @@ async function run() {
   });
   assert.strictEqual(t.cardStates.get(key), 'executing');
 
+  const updateRow = { cardType: 'levelOrder', ticker: 'TSTUP', event: 'levelOrder', time: 10, level: 100, stopOffsetPts: 4, provider: 'simulated', instrumentType: 'EQ' };
+  const updateRow2 = { cardType: 'levelOrder', ticker: 'TSTUP', event: 'levelOrder', time: 11, level: 110, stopOffsetPts: 7, provider: 'simulated', instrumentType: 'EQ' };
+  t.instrumentInfo.set('TSTUP', { bid: 101, ask: 102, price: 101.5, tickSize: 0.5 });
+  handlers['orders:new'](null, updateRow);
+  handlers['orders:new'](null, updateRow2);
+  const updatedCard = t.cardByKey(t.rowKey(updateRow2));
+  assert(updatedCard);
+  assert.strictEqual(updatedCard.querySelector('.level-order-line input.level').value, '110');
+  assert.strictEqual(updatedCard.querySelector('.level-order-line input.sl').value, '7');
+
   const row2 = { cardType: 'levelOrder', ticker: 'TST2', event: 'levelOrder', time: 1, level: 100, provider: 'simulated', instrumentType: 'EQ' };
   t.instrumentInfo.set('TST2', { bid: 101, ask: 102, price: 101.5, tickSize: 0.5 });
   handlers['orders:new'](null, row2);
