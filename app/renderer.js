@@ -149,6 +149,7 @@ const $settingsSections = document.getElementById('settings-sections');
 const $settingsFields = document.getElementById('settings-fields');
 const $settingsClose = document.getElementById('settings-close');
 const settingsForms = new Map();
+const DESCRIPTOR_META_KEYS = new Set(['description', 'type', 'item', 'default', 'enum']);
 
 loadRendererHooks();
 
@@ -486,9 +487,9 @@ function showSection(name) {
         ...Object.keys(descObj || {})
       ]);
       for (const key of keys) {
-        if (key === 'description') continue;
-        if (key === 'type' && descObj && typeof descObj.type === 'string') continue;
         const hasValue = cfgObj && hasOwn.call(cfgObj, key);
+        if (String(key).startsWith('__')) continue;
+        if (!hasValue && DESCRIPTOR_META_KEYS.has(key)) continue;
         const val = hasValue ? cfgObj[key] : undefined;
         const d = descObj ? descObj[key] : undefined;
         const defaultVal = getDefault(d);
@@ -3227,6 +3228,7 @@ function saveAndCloseSettingsPanel() {
       for (const inp of form.querySelectorAll('input')) {
         const k = inp.dataset.field;
         if (!k) continue;
+        if (k.split('.').some(part => part.startsWith('__'))) continue;
         let val;
         if (inp.dataset.arrayMarker === '1') val = [];
         else if (inp.type === 'checkbox') val = inp.checked;
