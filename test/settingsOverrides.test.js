@@ -56,6 +56,61 @@ async function run() {
   ({ config } = settings.readConfig('tick-test'));
   assert.deepStrictEqual(config, { bySymbol: { NEW: 0.001 } });
 
+  const defaultsDir4 = fs.mkdtempSync(path.join(os.tmpdir(), 'defaults4-'));
+  const userDir4 = fs.mkdtempSync(path.join(os.tmpdir(), 'user4-'));
+  const file4 = 'execution.json';
+  const defaultsPath4 = path.join(defaultsDir4, file4);
+  fs.writeFileSync(defaultsPath4, JSON.stringify({
+    providers: {
+      ibkr: {
+        contractResolution: {
+          profiles: {
+            STK: {
+              secType: 'STK',
+              exchange: 'SMART',
+              currency: 'USD',
+              preferredPrimaryExchanges: ['NASDAQ']
+            }
+          },
+          profileBySymbol: {},
+          defaultProfile: 'STK'
+        }
+      }
+    }
+  }, null, 2));
+  fs.writeFileSync(path.join(defaultsDir4, 'execution-settings-descriptor.json'), JSON.stringify({
+    properties: {},
+    options: {
+      providers: {
+        ibkr: {
+          contractResolution: {
+            profiles: { __allowUnknown: true },
+            profileBySymbol: { __allowUnknown: true }
+          }
+        }
+      }
+    }
+  }, null, 2));
+  fs.writeFileSync(path.join(userDir4, file4), JSON.stringify({
+    providers: {
+      ibkr: {
+        contractResolution: {
+          profiles: { __allowUnknown: {} },
+          profileBySymbol: { __allowUnknown: {}, ALNY: 'STK' }
+        }
+      }
+    }
+  }, null, 2));
+
+  loadConfig.CONFIG_ROOTS.length = 0;
+  loadConfig.CONFIG_ROOTS.push(userDir4);
+
+  settings.register('execution-test', defaultsPath4, path.join(defaultsDir4, 'execution-settings-descriptor.json'));
+  ({ config } = settings.readConfig('execution-test'));
+  assert.strictEqual(config.providers.ibkr.contractResolution.profiles.__allowUnknown, undefined);
+  assert.strictEqual(config.providers.ibkr.contractResolution.profileBySymbol.__allowUnknown, undefined);
+  assert.strictEqual(config.providers.ibkr.contractResolution.profileBySymbol.ALNY, 'STK');
+
   loadConfig.CONFIG_ROOTS.length = 0;
   originalRoots.forEach(r => loadConfig.CONFIG_ROOTS.push(r));
 
