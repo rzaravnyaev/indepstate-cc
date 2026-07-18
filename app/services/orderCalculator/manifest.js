@@ -15,4 +15,8 @@ function initService(servicesApi = {}) {
   servicesApi.orderCalculator = orderCalculator;
 }
 
+settings.onApply('order-calculator', ({ config }) => {
+  require('./index').configure(config);
+});
+
 module.exports = { initService };

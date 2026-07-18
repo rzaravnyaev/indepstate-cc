@@ -20,7 +20,7 @@ const { calculateLimitBidTradePlan } = require('./services/levelOrder/strategy')
 const { collectRetryStopEntries, getRetryStopParentIds } = require('./services/levelOrder/retryStop');
 const { normalizeOrderQty, isValidOrderQty } = require('./services/executionQuantity');
 const orderCardsCfg = loadConfig('../services/orderCards/config/order-cards.json');
-const uiCfg = loadConfig('../services/ui/config/ui.json');
+let uiCfg = loadConfig('../services/ui/config/ui.json');
 
 function loadServices(servicesApi = {}) {
   let dirs = [];
@@ -463,6 +463,20 @@ function setWindowState(state = {}) {
   writeWindowState(next);
   return next;
 }
+
+servicesApi.settings?.onApply?.('ui', ({ config }) => {
+  uiCfg = config || {};
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.setAlwaysOnTop(uiCfg.alwaysOnTop === true);
+  const current = mainWindow.getBounds();
+  const next = { ...current };
+  if (Number.isFinite(uiCfg.width) && uiCfg.width > 100) next.width = Math.trunc(uiCfg.width);
+  if (Number.isFinite(uiCfg.height) && uiCfg.height > 100) next.height = Math.trunc(uiCfg.height);
+  if (Number.isFinite(uiCfg.x)) next.x = Math.trunc(uiCfg.x);
+  if (Number.isFinite(uiCfg.y)) next.y = Math.trunc(uiCfg.y);
+  mainWindow.setBounds(next);
+  setWindowState(next);
+});
 
 function scheduleWindowStateSave() {
   if (windowStateSaveTimer) clearTimeout(windowStateSaveTimer);
@@ -1059,6 +1073,7 @@ function setupIpc(orderSvc) {
     mainWindow,
     instrumentInfo
   });
+  servicesApi.settings?.onApply?.('pending-strategies', ({ config }) => pendingHub.configureStrategies(config));
 
   ipcMain.handle('level-order:place', async (_evt, payload = {}) => {
     const symbol = String(payload.ticker || payload.symbol || '').trim();

@@ -2,30 +2,31 @@
 const {ipcRenderer} = require('electron');
 const path = require('path');
 const loadConfig = require('./config/load');
+const settingsRuntime = require('./services/settings');
 const servicesApi = require('./services/servicesApi');
 const tradeRules = servicesApi.tradeRules || require('./services/tradeRules');
 const {detectInstrumentType} = require("./services/instruments");
 const {findTickSizeOverride, getDefaultTickSize} = require('./services/points');
 const orderCalc = servicesApi.orderCalculator || require('./services/orderCalculator');
 const { resolveLevelOrderDefaults } = require('./services/levelOrder/strategy');
-const orderCardsCfg = loadConfig('../services/orderCards/config/order-cards.json');
+let orderCardsCfg = loadConfig('../services/orderCards/config/order-cards.json');
 let levelOrderCfg = loadConfig('../services/levelOrder/config/level-order.json');
 const envEquityStop = Number(process.env.DEFAULT_EQUITY_STOP_USD);
-const EQUITY_DEFAULT_STOP_USD = Number.isFinite(envEquityStop)
+let EQUITY_DEFAULT_STOP_USD = Number.isFinite(envEquityStop)
   ? envEquityStop
   : Number(orderCardsCfg?.defaultEquityStopUsd) || 0;
 
 const envCxStop = Number(process.env.DEFAULT_CX_STOP_USD);
-const CX_DEFAULT_STOP_USD = Number.isFinite(envCxStop)
+let CX_DEFAULT_STOP_USD = Number.isFinite(envCxStop)
   ? envCxStop
   : Number(orderCardsCfg?.defaultCxStopUsd) || 0;
 
-const SHOW_BID_ASK = !!(orderCardsCfg && orderCardsCfg.showBidAsk);
-const SHOW_SPREAD = !!(orderCardsCfg && orderCardsCfg.showSpread);
+let SHOW_BID_ASK = !!(orderCardsCfg && orderCardsCfg.showBidAsk);
+let SHOW_SPREAD = !!(orderCardsCfg && orderCardsCfg.showSpread);
 
 
 const envInstrRefresh = Number(process.env.INSTRUMENT_REFRESH_MS);
-const INSTRUMENT_REFRESH_MS = Number.isFinite(envInstrRefresh)
+let INSTRUMENT_REFRESH_MS = Number.isFinite(envInstrRefresh)
   ? envInstrRefresh
   : Number(orderCardsCfg?.instrumentRefreshMs) || 1000;
 let optionStratValuationRefreshMs = 5000;
@@ -39,8 +40,8 @@ const DEFAULT_OPTIONSTRAT_DISPLAY_FIELDS = {
 };
 let optionStratDisplayFields = {...DEFAULT_OPTIONSTRAT_DISPLAY_FIELDS};
 
-const CLOSED_CARD_EVENT_STRATEGY = orderCardsCfg?.closedCardEventStrategy || 'ignore';
-const BUTTON_ROWS = Number(orderCardsCfg?.buttonRows) || 1;
+let CLOSED_CARD_EVENT_STRATEGY = orderCardsCfg?.closedCardEventStrategy || 'ignore';
+let BUTTON_ROWS = Number(orderCardsCfg?.buttonRows) || 1;
 
 const DEFAULT_CARD_BUTTONS = [
   {label: 'BL', action: 'BL', style: 'bl'},
@@ -50,7 +51,7 @@ const DEFAULT_CARD_BUTTONS = [
   {label: 'SC', action: 'SC', style: 'sc'},
   {label: 'SFB', action: 'SFB', style: 'sc'}
 ];
-const CARD_BUTTONS = Array.isArray(orderCardsCfg?.buttons) && orderCardsCfg.buttons.length
+let CARD_BUTTONS = Array.isArray(orderCardsCfg?.buttons) && orderCardsCfg.buttons.length
   ? orderCardsCfg.buttons.map((b) => Array.isArray(b) ? {label: b[0], action: b[1], style: b[2]} : b)
     .filter((b) => b && b.label && b.action)
   : DEFAULT_CARD_BUTTONS;
@@ -82,7 +83,7 @@ const closedCardStrategies = {
   }
 };
 
-const handleClosedCard = closedCardStrategies[CLOSED_CARD_EVENT_STRATEGY] || closedCardStrategies.ignore;
+let handleClosedCard = closedCardStrategies[CLOSED_CARD_EVENT_STRATEGY] || closedCardStrategies.ignore;
 
 // ======= App state =======
 const state = {rows: [], filter: '', autoscroll: true};
@@ -171,10 +172,75 @@ const $settingsPanel = document.getElementById('settings-panel');
 const $settingsSections = document.getElementById('settings-sections');
 const $settingsFields = document.getElementById('settings-fields');
 const $settingsClose = document.getElementById('settings-close');
+const $settingsRestart = document.getElementById('settings-restart-required');
 const settingsForms = new Map();
 const DESCRIPTOR_META_KEYS = new Set(['description', 'type', 'item', 'default', 'enum']);
 
 loadRendererHooks();
+
+function applyOrderCardsConfig(config = {}) {
+  orderCardsCfg = config;
+  EQUITY_DEFAULT_STOP_USD = Number.isFinite(envEquityStop) ? envEquityStop : Number(config.defaultEquityStopUsd) || 0;
+  CX_DEFAULT_STOP_USD = Number.isFinite(envCxStop) ? envCxStop : Number(config.defaultCxStopUsd) || 0;
+  SHOW_BID_ASK = !!config.showBidAsk;
+  SHOW_SPREAD = !!config.showSpread;
+  INSTRUMENT_REFRESH_MS = Number.isFinite(envInstrRefresh) ? envInstrRefresh : Number(config.instrumentRefreshMs) || 1000;
+  CLOSED_CARD_EVENT_STRATEGY = config.closedCardEventStrategy || 'ignore';
+  BUTTON_ROWS = Number(config.buttonRows) || 1;
+  CARD_BUTTONS = Array.isArray(config.buttons) && config.buttons.length
+    ? config.buttons.map(b => Array.isArray(b) ? { label: b[0], action: b[1], style: b[2] } : b)
+      .filter(b => b && b.label && b.action)
+    : DEFAULT_CARD_BUTTONS;
+  handleClosedCard = closedCardStrategies[CLOSED_CARD_EVENT_STRATEGY] || closedCardStrategies.ignore;
+  render();
+}
+
+function renderRestartStatus(status = []) {
+  if (!$settingsRestart) return;
+  const entries = Array.isArray(status) ? status : [];
+  if (!entries.length) {
+    $settingsRestart.style.display = 'none';
+    $settingsRestart.textContent = '';
+    $settingsBtn.classList.remove('settings-restart-required');
+    $settingsBtn.title = 'Settings';
+    return;
+  }
+  $settingsRestart.textContent = `Restart required: ${entries.map(entry => `${entry.section} (${(entry.paths || []).join(', ')})`).join('; ')}`;
+  $settingsRestart.style.display = 'block';
+  $settingsBtn.classList.add('settings-restart-required');
+  $settingsBtn.title = $settingsRestart.textContent;
+}
+
+settingsRuntime.onApply('ui', ({ config }) => {
+  if (typeof config.autoscroll === 'boolean') state.autoscroll = config.autoscroll;
+});
+settingsRuntime.onApply('order-cards', ({ config }) => applyOrderCardsConfig(config));
+settingsRuntime.onApply('level-order', ({ config }) => {
+  levelOrderCfg = config || {};
+  render();
+});
+settingsRuntime.onApply('optionstrat', ({ config }) => {
+  const ms = Number(config?.valuationRefreshMs);
+  if (Number.isFinite(ms) && ms > 0) optionStratValuationRefreshMs = ms;
+  optionStratDisplayFields = normalizeOptionStratDisplayFields(config?.displayFields);
+  render();
+});
+
+ipcRenderer.on('settings:changed', async (_event, result) => {
+  if (!result?.saved) return;
+  const local = await settingsRuntime.applyConfig(result.section, result.config, result.appliedPaths || [], { source: 'settings-ui-renderer' });
+  const failedPaths = new Set(local.restartRequiredPaths || []);
+  settingsRuntime.commitAppliedConfig(
+    result.section,
+    result.config,
+    (result.appliedPaths || []).filter(pathName => !failedPaths.has(pathName))
+  );
+  if (local.errors.length) {
+    await ipcRenderer.invoke('settings:renderer-failed', result.section, result.appliedPaths || [], local.errors.join('; ')).catch(() => {});
+  }
+  ipcRenderer.invoke('settings:restart-status').then(renderRestartStatus).catch(() => {});
+});
+ipcRenderer.invoke('settings:restart-status').then(renderRestartStatus).catch(() => {});
 
 function loadRendererHooks() {
   let dirs = [];
@@ -198,6 +264,7 @@ function loadRendererHooks() {
 
 function loadSettingsSections() {
   settingsForms.clear();
+  ipcRenderer.invoke('settings:restart-status').then(renderRestartStatus).catch(() => {});
   ipcRenderer.invoke('settings:list').then((sections = []) => {
     $settingsSections.innerHTML = '';
     let prevGroup;
@@ -3229,7 +3296,10 @@ $settingsBtn.addEventListener('click', () => {
   $settingsPanel.style.display = 'flex';
   loadSettingsSections();
 });
-function saveAndCloseSettingsPanel() {
+let settingsSaveInProgress = false;
+async function saveAndCloseSettingsPanel() {
+  if (settingsSaveInProgress) return;
+  settingsSaveInProgress = true;
   const setNested = (obj, path, value) => {
     const parts = path.split('.');
     let cur = obj;
@@ -3251,56 +3321,49 @@ function saveAndCloseSettingsPanel() {
       cur[last] = value;
     }
   };
-  for (const [name, form] of settingsForms.entries()) {
-    if (form.dataset.dirty) {
-      const data = {};
-      for (const inp of form.querySelectorAll('input')) {
-        const k = inp.dataset.field;
-        if (!k) continue;
-        if (k.split('.').some(part => part.startsWith('__'))) continue;
-        let val;
-        if (inp.dataset.arrayMarker === '1') val = [];
-        else if (inp.type === 'checkbox') val = inp.checked;
-        else if (inp.type === 'number') val = inp.value === '' ? null : Number(inp.value);
-        else val = inp.value;
-        setNested(data, k, val);
-      }
-      if (name === 'tick-sizes') {
-        const bySymbol = {};
-        for (const row of form.querySelectorAll('.tick-size-symbol-row')) {
-          const symbol = row.querySelector('input[data-role="symbol"]')?.value.trim();
-          const tickSize = Number(row.querySelector('input[data-role="tickSize"]')?.value);
-          if (symbol && Number.isFinite(tickSize) && tickSize > 0) {
-            bySymbol[symbol] = tickSize;
+  const results = [];
+  try {
+    for (const [name, form] of settingsForms.entries()) {
+      if (form.dataset.dirty) {
+        const data = {};
+        for (const inp of form.querySelectorAll('input')) {
+          const k = inp.dataset.field;
+          if (!k) continue;
+          if (k.split('.').some(part => part.startsWith('__'))) continue;
+          let val;
+          if (inp.dataset.arrayMarker === '1') val = [];
+          else if (inp.type === 'checkbox') val = inp.checked;
+          else if (inp.type === 'number') val = inp.value === '' ? null : Number(inp.value);
+          else val = inp.value;
+          setNested(data, k, val);
+        }
+        if (name === 'tick-sizes') {
+          const bySymbol = {};
+          for (const row of form.querySelectorAll('.tick-size-symbol-row')) {
+            const symbol = row.querySelector('input[data-role="symbol"]')?.value.trim();
+            const tickSize = Number(row.querySelector('input[data-role="tickSize"]')?.value);
+            if (symbol && Number.isFinite(tickSize) && tickSize > 0) {
+              bySymbol[symbol] = tickSize;
+            }
           }
+          data.bySymbol = bySymbol;
         }
-        data.bySymbol = bySymbol;
-      }
-      ipcRenderer.invoke('settings:set', name, data).catch(() => {
-      });
-      if (name === 'ui') {
-        state.autoscroll = !!data.autoscroll;
-        const windowState = {};
-        for (const field of ['width', 'height', 'x', 'y']) {
-          if (Number.isFinite(data[field])) windowState[field] = data[field];
-        }
-        ipcRenderer.invoke('window:set-state', windowState).catch(() => {
-        });
-      }
-      if (name === 'optionstrat') {
-        const ms = Number(data.valuationRefreshMs);
-        if (Number.isFinite(ms) && ms > 0) optionStratValuationRefreshMs = ms;
-        optionStratDisplayFields = normalizeOptionStratDisplayFields(data.displayFields);
-        render();
-      }
-      if (name === 'level-order') {
-        levelOrderCfg = data || {};
-        render();
+        results.push(await ipcRenderer.invoke('settings:set', name, data));
       }
     }
+    const failures = results.flatMap(result => result?.errors || []);
+    const restart = await ipcRenderer.invoke('settings:restart-status').catch(() => []);
+    renderRestartStatus(restart);
+    if (failures.length) toast(`Settings saved; apply failed: ${failures.join('; ')}`);
+    else if (Array.isArray(restart) && restart.length) toast('Settings saved; restart required for some changes');
+    else if (results.length) toast('Settings saved and applied');
+    $settingsPanel.style.display = 'none';
+    settingsForms.clear();
+  } catch (error) {
+    toast(`Settings save failed: ${error?.message || error}`);
+  } finally {
+    settingsSaveInProgress = false;
   }
-  $settingsPanel.style.display = 'none';
-  settingsForms.clear();
 }
 
 $settingsClose.addEventListener('click', saveAndCloseSettingsPanel);

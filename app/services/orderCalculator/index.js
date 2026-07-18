@@ -6,6 +6,11 @@ class OrderCalculator {
     this.tradeRules = tradeRules;
   }
 
+  configure(config = {}) {
+    this.config = config && typeof config === 'object' ? JSON.parse(JSON.stringify(config)) : {};
+    return this;
+  }
+
   _loadDefaultConfig() {
     try {
       return loadConfig('../services/orderCalculator/config/order-calculator.json');

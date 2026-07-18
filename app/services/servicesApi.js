@@ -59,7 +59,7 @@
  * @property {McpApi} [mcp]
  * @property {AutoUpdaterApi} [autoUpdater]
  * @property {import('./tradeRules')} [tradeRules]
- * @property {{listConfigs:Function,readConfig:Function,writeConfig:Function}} [settings]
+ * @property {{listConfigs:Function,readConfig:Function,writeConfig:Function,saveAndApplyConfig:Function,getRestartStatus:Function,onApply:Function}} [settings]
  */
 
 module.exports = { commands: [] };

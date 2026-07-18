@@ -79,6 +79,7 @@ async function fetchAdapterHistory(adapter, symbol, timeframe = 'M1', limit = 15
 
 class PendingOrderHub {
   constructor({ strategies = {}, strategyConfig, subscribe, ipcMain, queuePlaceOrder, wireAdapter, mainWindow, getAdapter, resolveProvider, instrumentInfo } = {}) {
+    this.strategies = strategies;
     this.subscribe = subscribe;
     this.createStrategy = createStrategyFactory(strategyConfig, strategies);
     this.services = new Map(); // key: provider:symbol -> service
@@ -112,6 +113,13 @@ class PendingOrderHub {
       }
       ipcMain.handle('queue-place-pending', async (_evt, payload) => this.queuePlacePending(payload));
       ipcMain.handle('pending:cancel', async (_evt, pendingId) => this.cancelPending(pendingId));
+    }
+  }
+
+  configureStrategies(strategyConfig) {
+    this.createStrategy = createStrategyFactory(strategyConfig, this.strategies);
+    for (const service of this.services.values()) {
+      service.configureStrategies(this.createStrategy);
     }
   }
 

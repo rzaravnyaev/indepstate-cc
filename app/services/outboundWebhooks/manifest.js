@@ -94,6 +94,9 @@ function initService(servicesApi = {}) {
 
   const sender = createOutboundWebhooksService(cfg);
   servicesApi.outboundWebhooks = sender;
+  settings.onApply('outbound-webhooks', ({ config }) => {
+    sender.config = config || {};
+  });
 
   if (servicesApi.actionBus) {
     bridgeLifecycleEvents(servicesApi.actionBus);
