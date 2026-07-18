@@ -285,6 +285,94 @@ function loadSettingsSections() {
   });
 }
 
+function setNestedSettingValue(obj, path, value) {
+  const parts = path.split('.');
+  let cur = obj;
+  for (let i = 0; i < parts.length - 1; i++) {
+    const part = parts[i];
+    const nextIsIndex = /^\d+$/.test(parts[i + 1]);
+    if (nextIsIndex) {
+      if (!Array.isArray(cur[part])) cur[part] = [];
+    } else if (typeof cur[part] !== 'object' || cur[part] === null || Array.isArray(cur[part])) {
+      cur[part] = {};
+    }
+    cur = cur[part];
+  }
+  const last = parts[parts.length - 1];
+  if (/^\d+$/.test(last)) cur[Number(last)] = value;
+  else cur[last] = value;
+}
+
+function getNestedSettingValue(obj, path) {
+  if (!path) return obj;
+  return path.split('.').reduce((value, part) => value == null ? undefined : value[part], obj);
+}
+
+function cloneSettingsValue(value) {
+  return value == null ? value : JSON.parse(JSON.stringify(value));
+}
+
+function serializeStructuredSettingsForm(form, name) {
+  const data = {};
+  for (const input of form.querySelectorAll('input')) {
+    const key = input.dataset.field;
+    if (!key) continue;
+    if (key.split('.').some(part => part.startsWith('__'))) continue;
+    let value;
+    if (input.dataset.arrayMarker === '1') value = [];
+    else if (input.type === 'checkbox') value = input.checked;
+    else if (input.type === 'number') value = input.value === '' ? null : Number(input.value);
+    else value = input.value;
+    setNestedSettingValue(data, key, value);
+  }
+  if (name === 'tick-sizes') {
+    const bySymbol = {};
+    for (const row of form.querySelectorAll('.tick-size-symbol-row')) {
+      const symbol = row.querySelector('input[data-role="symbol"]')?.value.trim();
+      const tickSize = Number(row.querySelector('input[data-role="tickSize"]')?.value);
+      if (symbol && Number.isFinite(tickSize) && tickSize > 0) bySymbol[symbol] = tickSize;
+    }
+    data.bySymbol = bySymbol;
+  }
+  return data;
+}
+
+function setRawSettingsError(form, message = '') {
+  const error = form.querySelector('[data-role="raw-json-error"]');
+  if (!error) return;
+  error.textContent = message;
+  error.style.display = message ? 'block' : 'none';
+}
+
+function parseRawSettingsForm(form) {
+  const editor = form.querySelector('textarea[data-role="raw-json"]');
+  if (!editor) return serializeStructuredSettingsForm(form, form.dataset.section);
+  try {
+    const config = JSON.parse(editor.value);
+    if (form.dataset.rawEditorType === 'array' && !Array.isArray(config)) {
+      throw new Error('Configuration must be a JSON array');
+    }
+    if (form.dataset.rawEditorType !== 'array' && (!config || typeof config !== 'object' || Array.isArray(config))) {
+      throw new Error('Configuration must be a JSON object');
+    }
+    setRawSettingsError(form);
+    return config;
+  } catch (error) {
+    setRawSettingsError(form, error?.message || String(error));
+    throw error;
+  }
+}
+
+function serializeSettingsForm(form, name) {
+  if (form.dataset.editorMode !== 'json') return serializeStructuredSettingsForm(form, name);
+  const rawConfig = parseRawSettingsForm(form);
+  const rawPath = form.dataset.rawEditorPath || '';
+  if (!rawPath) return rawConfig;
+  const config = serializeStructuredSettingsForm(form, name);
+  setNestedSettingValue(config, rawPath, rawConfig);
+  return config;
+}
+
 function getSettingsInput(form, field) {
   return form.querySelector(`input[data-field="${field}"]`);
 }
@@ -301,7 +389,7 @@ function formatWindowState(state) {
   return `width ${value('width')} / height ${value('height')} / x ${value('x')} / y ${value('y')}`;
 }
 
-function appendUiWindowStateTools(form) {
+function appendUiWindowStateTools(form, parent = form) {
   const group = document.createElement('div');
   group.className = 'settings-group settings-window-state';
 
@@ -329,7 +417,7 @@ function appendUiWindowStateTools(form) {
   actions.appendChild(applyBtn);
 
   group.appendChild(actions);
-  form.insertBefore(group, form.firstChild);
+  parent.insertBefore(group, parent.firstChild);
 
   let lastState = null;
   const refresh = () => ipcRenderer.invoke('window:get-state')
@@ -358,7 +446,7 @@ function appendUiWindowStateTools(form) {
   refresh();
 }
 
-function appendTickSizeBySymbolTools(form, bySymbol = {}) {
+function appendTickSizeBySymbolTools(form, bySymbol = {}, parent = form) {
   const group = document.createElement('div');
   group.className = 'settings-group settings-dynamic-map';
 
@@ -423,7 +511,7 @@ function appendTickSizeBySymbolTools(form, bySymbol = {}) {
     markDirty();
   });
   group.appendChild(add);
-  form.appendChild(group);
+  parent.appendChild(group);
 }
 
 function showSection(name) {
@@ -438,12 +526,26 @@ function showSection(name) {
   }
   ipcRenderer.invoke('settings:get', name).then((res = {}) => {
     const cfg = res.config || res;
+    const descriptorProperties = (res.descriptor && res.descriptor.properties) || {};
+    const rawEditorDescriptor = descriptorProperties.rawEditor === true
+      ? {}
+      : (descriptorProperties.rawEditor && typeof descriptorProperties.rawEditor === 'object'
+          ? descriptorProperties.rawEditor
+          : null);
     const desc = { ...((res.descriptor && res.descriptor.options) || {}) };
-    const formCfg = name === 'tick-sizes' ? { ...(cfg || {}) } : cfg;
-    if (name === 'tick-sizes') delete formCfg.bySymbol;
     if (name === 'tick-sizes') delete desc.bySymbol;
     const form = document.createElement('form');
     form.dataset.section = name;
+    form.dataset.editorMode = 'form';
+    const structuredEditor = document.createElement('div');
+    structuredEditor.className = 'settings-structured-editor';
+    form.appendChild(structuredEditor);
+    let structuredEditorChanged = false;
+    let structuredConfigValue = cfg;
+    const markStructuredDirty = () => {
+      structuredEditorChanged = true;
+      form.dataset.dirty = '1';
+    };
     const hasOwn = Object.prototype.hasOwnProperty;
     const getDefault = (d) => (d && hasOwn.call(d, 'default') ? d.default : undefined);
     const build = (parent, cfgObj, descObj, prefix = '') => {
@@ -489,7 +591,7 @@ function showSection(name) {
             rm.addEventListener('click', () => {
               itemsWrap.removeChild(group);
               reindex();
-              form.dataset.dirty = '1';
+              markStructuredDirty();
             });
             head.appendChild(rm);
             group.appendChild(head);
@@ -522,10 +624,10 @@ function showSection(name) {
             }
             input.dataset.field = path;
             input.addEventListener('input', () => {
-              form.dataset.dirty = '1';
+              markStructuredDirty();
             });
             input.addEventListener('change', () => {
-              form.dataset.dirty = '1';
+              markStructuredDirty();
             });
             label.appendChild(input);
             const rm = document.createElement('button');
@@ -535,7 +637,7 @@ function showSection(name) {
             rm.addEventListener('click', () => {
               itemsWrap.removeChild(label);
               reindex();
-              form.dataset.dirty = '1';
+              markStructuredDirty();
             });
             label.appendChild(rm);
             itemsWrap.appendChild(label);
@@ -566,7 +668,7 @@ function showSection(name) {
           else if (itemDesc && itemDesc.type === 'boolean') v = false;
           else v = '';
           renderItem(v, itemsWrap.children.length);
-          form.dataset.dirty = '1';
+          markStructuredDirty();
         });
         parent.appendChild(itemsWrap);
         parent.appendChild(addBtn);
@@ -623,19 +725,171 @@ function showSection(name) {
           const path = prefix ? `${prefix}.${key}` : key;
           input.dataset.field = path;
           input.addEventListener('input', () => {
-            form.dataset.dirty = '1';
+            markStructuredDirty();
           });
           input.addEventListener('change', () => {
-            form.dataset.dirty = '1';
+            markStructuredDirty();
           });
           label.appendChild(input);
           parent.appendChild(label);
         }
       }
     };
-    build(form, formCfg, desc);
-    if (name === 'ui') appendUiWindowStateTools(form);
-    if (name === 'tick-sizes') appendTickSizeBySymbolTools(form, cfg.bySymbol || {});
+    const renderStructuredEditor = (config) => {
+      structuredEditor.innerHTML = '';
+      const structuredConfig = name === 'tick-sizes' ? { ...(config || {}) } : config;
+      if (name === 'tick-sizes') delete structuredConfig.bySymbol;
+      build(structuredEditor, structuredConfig, desc);
+      if (name === 'ui') appendUiWindowStateTools(form, structuredEditor);
+      if (name === 'tick-sizes') appendTickSizeBySymbolTools(form, config?.bySymbol || {}, structuredEditor);
+      structuredConfigValue = config;
+      structuredEditorChanged = false;
+    };
+    renderStructuredEditor(cfg);
+
+    if (rawEditorDescriptor) {
+      const rawEditorPath = String(rawEditorDescriptor.path || '');
+      const initialRawValue = getNestedSettingValue(cfg, rawEditorPath);
+      const rawEditorType = rawEditorDescriptor.type || (Array.isArray(initialRawValue) ? 'array' : 'object');
+      form.dataset.rawEditorPath = rawEditorPath;
+      form.dataset.rawEditorType = rawEditorType;
+      const controls = document.createElement('div');
+      controls.className = 'settings-editor-controls';
+      const formButton = document.createElement('button');
+      formButton.type = 'button';
+      formButton.textContent = 'Form';
+      formButton.dataset.editorMode = 'form';
+      formButton.className = 'active';
+      const jsonButton = document.createElement('button');
+      jsonButton.type = 'button';
+      jsonButton.textContent = rawEditorDescriptor.label || (rawEditorPath ? `${rawEditorPath} JSON` : 'JSON');
+      jsonButton.dataset.editorMode = 'json';
+      controls.append(formButton, jsonButton);
+      form.insertBefore(controls, structuredEditor);
+
+      const rawEditor = document.createElement('div');
+      rawEditor.className = 'settings-raw-editor';
+      rawEditor.hidden = true;
+      const textarea = document.createElement('textarea');
+      textarea.dataset.role = 'raw-json';
+      textarea.spellcheck = false;
+      textarea.setAttribute('aria-label', `${descriptorProperties.name || name} JSON configuration`);
+      const error = document.createElement('div');
+      error.className = 'settings-raw-error';
+      error.dataset.role = 'raw-json-error';
+      error.style.display = 'none';
+      rawEditor.append(textarea, error);
+
+      if (rawEditorDescriptor.snippets === true && rawEditorType === 'array') {
+        const snippetToggle = document.createElement('button');
+        snippetToggle.type = 'button';
+        snippetToggle.className = 'settings-snippet-toggle';
+        snippetToggle.textContent = rawEditorDescriptor.snippetLabel || 'Add JSON snippet';
+        const snippetPanel = document.createElement('div');
+        snippetPanel.className = 'settings-snippet-panel';
+        snippetPanel.hidden = true;
+        const snippetEditor = document.createElement('textarea');
+        snippetEditor.dataset.role = 'raw-json-snippet';
+        snippetEditor.spellcheck = false;
+        snippetEditor.placeholder = '{ "event": "event-name", "action": "commandLine:command" }';
+        const snippetError = document.createElement('div');
+        snippetError.className = 'settings-raw-error';
+        snippetError.dataset.role = 'raw-json-snippet-error';
+        snippetError.style.display = 'none';
+        const snippetActions = document.createElement('div');
+        snippetActions.className = 'settings-snippet-actions';
+        const appendSnippet = document.createElement('button');
+        appendSnippet.type = 'button';
+        appendSnippet.textContent = 'Append';
+        const cancelSnippet = document.createElement('button');
+        cancelSnippet.type = 'button';
+        cancelSnippet.textContent = 'Cancel';
+        snippetActions.append(appendSnippet, cancelSnippet);
+        snippetPanel.append(snippetEditor, snippetError, snippetActions);
+        rawEditor.append(snippetToggle, snippetPanel);
+
+        const setSnippetError = (message = '') => {
+          snippetError.textContent = message;
+          snippetError.style.display = message ? 'block' : 'none';
+        };
+        snippetToggle.addEventListener('click', () => {
+          snippetPanel.hidden = false;
+          snippetEditor.focus();
+        });
+        cancelSnippet.addEventListener('click', () => {
+          snippetPanel.hidden = true;
+          snippetEditor.value = '';
+          setSnippetError();
+        });
+        appendSnippet.addEventListener('click', () => {
+          try {
+            const current = parseRawSettingsForm(form);
+            const parsed = JSON.parse(snippetEditor.value);
+            const additions = Array.isArray(parsed) ? parsed : [parsed];
+            if (!additions.length || additions.some(item => !item || typeof item !== 'object' || Array.isArray(item))) {
+              throw new Error('Snippet must be an action object or an array of action objects');
+            }
+            textarea.value = JSON.stringify([...current, ...additions], null, 2);
+            form.dataset.dirty = '1';
+            setRawSettingsError(form);
+            setSnippetError();
+            snippetEditor.value = '';
+            snippetPanel.hidden = true;
+            textarea.focus();
+          } catch (snippetFailure) {
+            setSnippetError(snippetFailure?.message || String(snippetFailure));
+            snippetEditor.focus();
+          }
+        });
+      }
+      form.appendChild(rawEditor);
+
+      const activateMode = (mode) => {
+        if (mode === form.dataset.editorMode) return true;
+        if (mode === 'json') {
+          const config = structuredEditorChanged
+            ? serializeStructuredSettingsForm(form, name)
+            : structuredConfigValue;
+          const rawValue = getNestedSettingValue(config, rawEditorPath);
+          textarea.value = JSON.stringify(
+            rawValue === undefined ? (rawEditorType === 'array' ? [] : {}) : rawValue,
+            null,
+            2
+          );
+        } else {
+          let rawValue;
+          try {
+            rawValue = parseRawSettingsForm(form);
+          } catch {
+            textarea.focus();
+            return false;
+          }
+          let rawConfig = cloneSettingsValue(structuredEditorChanged
+            ? serializeStructuredSettingsForm(form, name)
+            : structuredConfigValue);
+          if (rawEditorPath) {
+            if (!rawConfig || typeof rawConfig !== 'object' || Array.isArray(rawConfig)) rawConfig = {};
+            setNestedSettingValue(rawConfig, rawEditorPath, rawValue);
+          }
+          else rawConfig = rawValue;
+          renderStructuredEditor(rawConfig);
+        }
+        form.dataset.editorMode = mode;
+        structuredEditor.hidden = mode !== 'form';
+        rawEditor.hidden = mode !== 'json';
+        formButton.classList.toggle('active', mode === 'form');
+        jsonButton.classList.toggle('active', mode === 'json');
+        if (mode === 'json') textarea.focus();
+        return true;
+      };
+
+      formButton.addEventListener('click', () => activateMode('form'));
+      jsonButton.addEventListener('click', () => activateMode('json'));
+      textarea.addEventListener('input', () => {
+        form.dataset.dirty = '1';
+        try { parseRawSettingsForm(form); } catch {}
+      });
+    }
     settingsForms.set(name, form);
     $settingsFields.innerHTML = '';
     $settingsFields.appendChild(form);
@@ -3300,56 +3554,23 @@ let settingsSaveInProgress = false;
 async function saveAndCloseSettingsPanel() {
   if (settingsSaveInProgress) return;
   settingsSaveInProgress = true;
-  const setNested = (obj, path, value) => {
-    const parts = path.split('.');
-    let cur = obj;
-    for (let i = 0; i < parts.length - 1; i++) {
-      const p = parts[i];
-      const next = parts[i + 1];
-      const nextIsIndex = /^\d+$/.test(next);
-      if (nextIsIndex) {
-        if (!Array.isArray(cur[p])) cur[p] = [];
-      } else {
-        if (typeof cur[p] !== 'object' || cur[p] === null || Array.isArray(cur[p])) cur[p] = {};
-      }
-      cur = cur[p];
-    }
-    const last = parts[parts.length - 1];
-    if (/^\d+$/.test(last)) {
-      cur[Number(last)] = value;
-    } else {
-      cur[last] = value;
-    }
-  };
   const results = [];
   try {
+    const pendingSaves = [];
     for (const [name, form] of settingsForms.entries()) {
       if (form.dataset.dirty) {
-        const data = {};
-        for (const inp of form.querySelectorAll('input')) {
-          const k = inp.dataset.field;
-          if (!k) continue;
-          if (k.split('.').some(part => part.startsWith('__'))) continue;
-          let val;
-          if (inp.dataset.arrayMarker === '1') val = [];
-          else if (inp.type === 'checkbox') val = inp.checked;
-          else if (inp.type === 'number') val = inp.value === '' ? null : Number(inp.value);
-          else val = inp.value;
-          setNested(data, k, val);
+        try {
+          pendingSaves.push([name, serializeSettingsForm(form, name)]);
+        } catch (error) {
+          showSection(name);
+          form.querySelector('textarea[data-role="raw-json"]')?.focus();
+          toast(`Invalid JSON in ${name}: ${error?.message || error}`);
+          return;
         }
-        if (name === 'tick-sizes') {
-          const bySymbol = {};
-          for (const row of form.querySelectorAll('.tick-size-symbol-row')) {
-            const symbol = row.querySelector('input[data-role="symbol"]')?.value.trim();
-            const tickSize = Number(row.querySelector('input[data-role="tickSize"]')?.value);
-            if (symbol && Number.isFinite(tickSize) && tickSize > 0) {
-              bySymbol[symbol] = tickSize;
-            }
-          }
-          data.bySymbol = bySymbol;
-        }
-        results.push(await ipcRenderer.invoke('settings:set', name, data));
       }
+    }
+    for (const [name, data] of pendingSaves) {
+      results.push(await ipcRenderer.invoke('settings:set', name, data));
     }
     const failures = results.flatMap(result => result?.errors || []);
     const restart = await ipcRenderer.invoke('settings:restart-status').catch(() => []);
