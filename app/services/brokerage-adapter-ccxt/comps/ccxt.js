@@ -207,7 +207,13 @@ class CCXTExecutionAdapter extends ExecutionAdapter {
     const pf = filters.find((f) => f.filterType === 'PRICE_FILTER') || {};
     const lf = filters.find((f) => f.filterType === 'LOT_SIZE') || {};
     const mn = filters.find((f) => f.filterType === 'MIN_NOTIONAL') || {};
-    return { tickSize: Number(pf.tickSize || 0), stepSize: Number(lf.stepSize || 0), minNotional: Number(mn.notional || mn.minNotional || 0) };
+    return {
+      tickSize: Number(pf.tickSize || 0),
+      stepSize: Number(lf.stepSize || 0),
+      minQty: Number(lf.minQty || 0),
+      maxQty: Number(lf.maxQty || 0),
+      minNotional: Number(mn.notional || mn.minNotional || 0)
+    };
   }
 
   async _waitBinanceOrderFilled(symbol, clientOrderId, timeoutMs = 120000) {
@@ -2052,6 +2058,54 @@ class CCXTExecutionAdapter extends ExecutionAdapter {
    * @param {string} symbol - у форматі ccxt або локальний (буде змаплено)
    * @returns {Promise<{bid?:number, ask?:number, price?:number}|null>}
    */
+  async getInstrumentMetadata(symbol) {
+    try {
+      await this.ensureReady();
+      const mapped = this.mapSymbol(symbol);
+      let market;
+      try {
+        market = (this.exchange.markets && this.exchange.markets[mapped]) || this.exchange.market(mapped);
+      } catch {}
+
+      let filters = {};
+      if (this._isBinanceUsdmLike()) {
+        const normalized = await this.normalizeBinanceUsdmSymbol(symbol);
+        filters = await this._getBinanceSymbolFilters(normalized);
+      }
+
+      const amountPrecision = market?.precision?.amount;
+      let quantityStep;
+      if (this.exchange?.precisionMode === ccxt.TICK_SIZE && Number(amountPrecision) > 0) {
+        quantityStep = Number(amountPrecision);
+      } else if (Number.isInteger(amountPrecision) && amountPrecision >= 0 && amountPrecision <= 18) {
+        quantityStep = 10 ** (-amountPrecision);
+      } else if (Number.isFinite(Number(amountPrecision)) && Number(amountPrecision) > 0) {
+        quantityStep = Number(amountPrecision);
+      }
+
+      const source = this._isBinanceUsdmLike() ? 'binance-exchangeInfo' : 'ccxt-market';
+      return {
+        tickSize: Number(filters.tickSize) > 0 ? Number(filters.tickSize) : this._getTickSizeFromMarket(mapped),
+        quantityStep: Number(filters.stepSize) > 0 ? Number(filters.stepSize) : quantityStep,
+        minQty: Number(filters.minQty) > 0 ? Number(filters.minQty) : Number(market?.limits?.amount?.min),
+        maxQty: Number(filters.maxQty) > 0 ? Number(filters.maxQty) : Number(market?.limits?.amount?.max),
+        minNotional: Number(filters.minNotional) > 0 ? Number(filters.minNotional) : Number(market?.limits?.cost?.min),
+        contractSize: Number(market?.contractSize),
+        sources: {
+          tickSize: source,
+          quantityStep: source,
+          minQty: source,
+          maxQty: source,
+          minNotional: source,
+          contractSize: 'ccxt-market'
+        }
+      };
+    } catch (err) {
+      console.error(`[${this.provider}] getInstrumentMetadata:error`, { symbol, message: err?.message || String(err) });
+      return null;
+    }
+  }
+
   async getQuote(symbol, quoteType = 'book') {
     let normalizedSymbol;
     let endpoint = this._binanceQuoteTypeToEndpoint(quoteType);

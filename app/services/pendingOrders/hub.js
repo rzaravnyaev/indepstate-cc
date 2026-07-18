@@ -6,8 +6,8 @@ const { createStrategyFactory } = require('./factory');
 const servicesApi = require('../servicesApi');
 const tradeRules = require('../tradeRules');
 const orderCalc = servicesApi.orderCalculator || require('../orderCalculator');
-const { resolveTickSize } = require('../points');
 const { resolveProvider: defaultResolveProvider } = require('../brokerage/providerResolver');
+const { createInstrumentInfoService } = require('../instrumentInfo');
 
 const userData = require('electron')?.app?.getPath('userData') || path.join(__dirname, '..', '..');
 const LOG_DIR = path.join(userData, 'logs');
@@ -78,7 +78,7 @@ async function fetchAdapterHistory(adapter, symbol, timeframe = 'M1', limit = 15
 }
 
 class PendingOrderHub {
-  constructor({ strategies = {}, strategyConfig, subscribe, ipcMain, queuePlaceOrder, wireAdapter, mainWindow, getAdapter, resolveProvider } = {}) {
+  constructor({ strategies = {}, strategyConfig, subscribe, ipcMain, queuePlaceOrder, wireAdapter, mainWindow, getAdapter, resolveProvider, instrumentInfo } = {}) {
     this.subscribe = subscribe;
     this.createStrategy = createStrategyFactory(strategyConfig, strategies);
     this.services = new Map(); // key: provider:symbol -> service
@@ -92,6 +92,12 @@ class PendingOrderHub {
     this.mainWindow = mainWindow;
     this.getAdapter = getAdapter || servicesApi.brokerage?.getAdapter;
     this.resolveProvider = resolveProvider || servicesApi.brokerage?.resolveProvider || defaultResolveProvider;
+    this.instrumentInfo = instrumentInfo || servicesApi.instrumentInfo || createInstrumentInfoService({
+      brokerage: {
+        getAdapter: this.getAdapter,
+        resolveProvider: this.resolveProvider
+      }
+    });
 
     events.on('bar', ({ provider, symbol, tf, open, high, low, close, time, timestamp }) => {
       if (tf !== 'M1') return;
@@ -158,9 +164,22 @@ class PendingOrderHub {
         Math.max(1, Number(limit) || Number(historyBars) || 15)
       )
       : null;
+    const getInstrumentSnapshot = async (options = {}) => {
+      try {
+        return await this.instrumentInfo?.get({
+          provider: providerName,
+          symbol,
+          instrumentType: payload.instrumentType,
+          payload
+        }, options);
+      } catch (err) {
+        console.error('pending: instrument info failed', err);
+        return null;
+      }
+    };
     const getQuote = adapter
       ? async () => {
-        try { return await adapter.getQuote?.(symbol); }
+        try { return (await getInstrumentSnapshot())?.quote || null; }
         catch (err) {
           console.error('pending: getQuote failed', err);
           return null;
@@ -183,12 +202,11 @@ class PendingOrderHub {
       onExecute: async ({ limitPrice, stopLoss, takeProfit }) => {
         this.pendingIndex.delete(pendingId);
 
-        const quote = await getQuote();
-        const effectiveTickSize = resolveTickSize({
-          symbol,
-          explicitTickSize: payload.tickSize,
-          quoteTickSize: quote?.tickSize
-        });
+        const instrumentSnapshot = await getInstrumentSnapshot({ forceQuote: true });
+        const effectiveTickSize = this.instrumentInfo?.resolveTickSize(
+          { provider: providerName, symbol, instrumentType: payload.instrumentType, payload },
+          { explicitTickSize: payload.tickSize }
+        ) || instrumentSnapshot?.metadata?.tickSize;
 
         let stopPts;
         let takePts;
@@ -210,7 +228,8 @@ class PendingOrderHub {
               stopPts,
               tickSize: effectiveTickSize,
               lot: payload.lot,
-              instrumentType: payload.instrumentType
+              instrumentType: payload.instrumentType,
+              quantityStep: instrumentSnapshot?.metadata?.quantityStep
             });
           } else {
             qty = Number(payload.meta?.qty || payload.qty || 0);
@@ -243,6 +262,7 @@ class PendingOrderHub {
           takeProfitPrice: Number.isFinite(takePts) && takePts > 0 ? undefined : (Number.isFinite(Number(takeProfit)) ? Number(takeProfit) : undefined),
           meta: {
             ...payload.meta,
+            ...(Number(instrumentSnapshot?.metadata?.quantityStep) > 0 ? { quantityStep: Number(instrumentSnapshot.metadata.quantityStep) } : {}),
             riskUsd: Number.isFinite(risk) ? risk : payload.meta?.riskUsd,
             ...(hasStopPts ? { stopPts } : {}),
             ...(Number.isFinite(takePts) && takePts > 0 ? { takePts } : {}),
