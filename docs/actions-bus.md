@@ -153,7 +153,7 @@ automatically generate order cards via the command line:
       "bindings": [
         {
           "event": "tv-tool-horzline-ray",
-          "action": "commandLine:l distPtsPlus({price},{rayPrice}, 1) props=producingLineId:{lineId}"
+          "action": "commandLine:l 10 distPtsPlus({price},{rayPrice}, 1)"
         },
         {
           "event": "tv-tool-horzline-remove",
@@ -182,9 +182,9 @@ Both actions subscribe to the same pair of TradingView line events:
 - On remove: runs `rm producingLineId:<lineId>` to cancel the level-order card tied to that line.
 
 **TV OC** — plain order card creation (no symbol context, price-distance sizing):
-- On draw: runs `l <distPtsPlus> props=producingLineId:<lineId>`.
-  - Passes the price distance (line-to-ray, +1 pt) as the first positional argument to the `l` command.
-  - Attaches the line ID for later removal.
+- On draw: runs `l 10 <distPtsPlus>`.
+  - Passes `10` as the first positional argument (`sl`) and the price distance (line-to-ray, +1 pt) as the second positional argument (`tp`).
+  - The `l` command automatically attaches the latest horizontal line ID as `producingLineId`; it does not accept `props=`.
 - On remove: same `rm` cleanup as TV LO.
 
 Both actions appear as independent toggles in the toolbar, so either can be enabled/disabled at

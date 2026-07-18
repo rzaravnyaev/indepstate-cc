@@ -42,12 +42,12 @@ Creates a new order card with the given ticker, entry price and stop loss. `sl` 
 ### last (alias: l)
 
 ```
-last [tp] [risk]
+last [sl] [tp] [risk]
 ```
 
-Creates a card from the latest TradingView horizontal line captured by the `tvListener` service. The service stores the symbol and price from incoming `LineToolHorzLine` updates and the command reuses them as the ticker and entry price. Optional arguments follow the `add` command semantics: the first argument overrides the take-profit (`tp`) and the second overrides the `risk` value.
+Creates a card from the latest TradingView horizontal line captured by the `tvListener` service. The service stores the symbol and price from incoming `LineToolHorzLine` updates and the command reuses them as the ticker and entry price. Optional arguments follow the `add` command semantics: the first argument overrides the stop-loss (`sl`), the second overrides the take-profit (`tp`), and the third overrides the `risk` value. The stop-loss defaults to `10` points when omitted; when TP is omitted, the card calculates it automatically from the stop-loss.
 
-When the TradingView payload includes the line identifier, the resulting card receives a `producingLineId` field matching that ID. Automation rules and manual commands can use the field to correlate cards with the TradingView objects that created them.
+When the TradingView payload includes the line identifier, the resulting card automatically receives a `producingLineId` field matching that ID. Automation rules and manual commands can use the field to correlate cards with the TradingView objects that created them. Unlike `levelOrder`, `last` does not accept a `props=` argument.
 
 ### levelOrder (alias: lo)
 
@@ -69,4 +69,3 @@ rm producingLineId:{id}
 Removes cards that match a specified criterion. Criteria are written as `key:value` pairs. The first supported key is `producingLineId`, which deletes the card created from the TradingView line with the given identifier. The command returns a validation error when the criterion is missing or malformed.
 
 Additional criteria may be added in the future; attempting to use an unknown key results in `Unknown criterion: {key}`.
-
