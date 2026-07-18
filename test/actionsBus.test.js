@@ -175,6 +175,42 @@ async function run() {
   asyncBus.emit('cold', { symbol: 'AAA', price: 10.1, rayPrice: 10 });
   assert.deepStrictEqual(asyncExecuted.slice(-2), ['first 0', 'second AAA']);
 
+  const defaultStateExecuted = [];
+  const persistedStates = {};
+  const defaultStateBus = createActionsBus({
+    initialActionStates: { Restored: true },
+    onActionStateChange(name, enabled) {
+      persistedStates[name] = enabled;
+    }
+  });
+  defaultStateBus.setCommandRunner(cmd => defaultStateExecuted.push(cmd));
+  defaultStateBus.configure([
+    { name: 'Disabled by config', enabled: false, event: 'disabled', action: 'disabled' },
+    {
+      name: 'Restored',
+      enabled: false,
+      bindings: [{ event: 'restored', action: 'restored' }]
+    }
+  ]);
+  assert.deepStrictEqual(defaultStateBus.listNamedActions(), [
+    { name: 'Disabled by config', label: 'Disabled by config', enabled: false },
+    { name: 'Restored', label: 'Restored', enabled: true }
+  ]);
+  defaultStateBus.emit('disabled');
+  defaultStateBus.emit('restored');
+  assert.deepStrictEqual(defaultStateExecuted, ['restored']);
+
+  defaultStateBus.setActionEnabled('Disabled by config', true);
+  assert.deepStrictEqual(persistedStates, { 'Disabled by config': true });
+  defaultStateBus.emit('disabled');
+  assert.deepStrictEqual(defaultStateExecuted, ['restored', 'disabled']);
+
+  const restartedBus = createActionsBus({ initialActionStates: persistedStates });
+  restartedBus.configure([
+    { name: 'Disabled by config', enabled: false, event: 'disabled', action: 'disabled' }
+  ]);
+  assert.strictEqual(restartedBus.getActionState('Disabled by config'), true);
+
   console.log('actionsBus tests passed');
 }
 
