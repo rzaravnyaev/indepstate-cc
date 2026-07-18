@@ -16,6 +16,7 @@ with a `name` exposes a checkbox that enables or disables the action at runtime.
     {
       "name": "TradingView automation",
       "label": "TV auto-lines",
+      "enabled": false,
       "bindings": [
         {
           "event": "tv-tool-horzline",
@@ -45,8 +46,10 @@ Objects are stringified and missing values resolve to empty strings.
   - `name` (optional) – identifier that groups bindings under a toggle. Named actions run only when
     the corresponding checkbox is enabled in the toolbar.
   - `label` (optional) – display name for the toggle. Defaults to `name` when omitted.
+  - `enabled` (optional) – initial state for a named action when no saved toggle state exists.
+    Defaults to `true`. A state saved through the toolbar takes precedence on later starts.
   - `bindings` (optional) – array of `{ event, action }` objects. Each binding inherits the parent's
-    `name` and `label` and runs only when the toggle is enabled.
+    `name`, `label`, and `enabled` default and runs only when the toggle is enabled.
 
 The configuration order determines the toggle order in the UI. Removing an action from the config also
 removes its toggle on the next reload.
@@ -113,7 +116,10 @@ arguments: the rendered command string, the action entry and the original payloa
 
 `actions-bus:hookRenderer` populates `<div id="actions-bus-toggles">` with one checkbox per named
 action. Toggling a checkbox invokes `actions-bus:set-enabled` and the main process replies with the
-updated state so the UI re-renders. When no named actions exist the container remains hidden.
+updated state so the UI re-renders. Named toggle states are saved to `actions-bus-state.json` in
+Electron's user-data directory and restored on the next application start. When no named actions
+exist the container remains hidden. Delete the state file while the app is closed to reset all named
+actions to their configured `enabled` defaults.
 
 Service-specific integrations are documented alongside each service module. For TradingView
 automation, see the [tv-listener service notes](tv-listener.md).

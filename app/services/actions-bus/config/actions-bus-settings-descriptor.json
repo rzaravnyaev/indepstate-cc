@@ -27,6 +27,10 @@
           "type": "string",
           "description": "Toggle label (optional, defaults to key)"
         },
+        "enabled": {
+          "type": "boolean",
+          "description": "Initial toggle state when no saved state exists (optional, defaults to true)"
+        },
         "bindings": {
           "description": "Grouped event bindings",
           "item": {

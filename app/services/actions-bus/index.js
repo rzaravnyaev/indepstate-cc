@@ -142,6 +142,12 @@ function optionLegPair(legs) {
 function createActionsBus(opts = {}) {
   const emitter = new EventEmitter();
   const namedStates = new Map(); // name -> { enabled, label }
+  const initialActionStates = opts.initialActionStates && typeof opts.initialActionStates === 'object'
+    ? opts.initialActionStates
+    : {};
+  const onActionStateChange = typeof opts.onActionStateChange === 'function'
+    ? opts.onActionStateChange
+    : null;
   const nameOrder = []; // preserve config order
   const configHandlers = new Map(); // event -> handler
   const pending = new Map(); // runnerKey -> [ { entry, payload } ]
@@ -435,10 +441,11 @@ function createActionsBus(opts = {}) {
     const grouped = new Map();
     const seenNames = new Set();
     const nameLabels = new Map();
+    const nameDefaults = new Map();
     nameOrder.length = 0;
     pending.clear();
 
-    function registerEntry(actionItem, nameOverride, labelOverride) {
+    function registerEntry(actionItem, nameOverride, labelOverride, enabledOverride) {
       if (!actionItem || typeof actionItem !== 'object') return;
       const eventName = typeof actionItem.event === 'string' ? actionItem.event.trim() : '';
       const command = typeof actionItem.action === 'string' ? actionItem.action.trim() : '';
@@ -464,6 +471,12 @@ function createActionsBus(opts = {}) {
       if (name && label) {
         nameLabels.set(name, label);
       }
+      const configuredEnabled = typeof enabledOverride === 'boolean'
+        ? enabledOverride
+        : (typeof actionItem.enabled === 'boolean' ? actionItem.enabled : undefined);
+      if (name && typeof configuredEnabled === 'boolean' && !nameDefaults.has(name)) {
+        nameDefaults.set(name, configuredEnabled);
+      }
     }
 
     if (Array.isArray(actions)) {
@@ -471,9 +484,10 @@ function createActionsBus(opts = {}) {
         if (!item || typeof item !== 'object') return;
         const groupName = normalizeName(item.name);
         const groupLabel = normalizeLabel(item.label);
+        const groupEnabled = typeof item.enabled === 'boolean' ? item.enabled : undefined;
         if (Array.isArray(item.bindings)) {
           item.bindings.forEach((binding) => {
-            registerEntry(binding, groupName, groupLabel);
+            registerEntry(binding, groupName, groupLabel, groupEnabled);
           });
         }
         registerEntry(item);
@@ -486,10 +500,15 @@ function createActionsBus(opts = {}) {
     }
     // ensure records for current names
     for (const name of nameOrder) {
-      const cur = namedStates.get(name) || {};
+      const cur = namedStates.get(name);
+      const restored = Object.prototype.hasOwnProperty.call(initialActionStates, name)
+        && typeof initialActionStates[name] === 'boolean'
+        ? initialActionStates[name]
+        : undefined;
+      const configured = nameDefaults.has(name) ? nameDefaults.get(name) : true;
       namedStates.set(name, {
-        enabled: cur.enabled !== false,
-        label: (nameLabels.has(name) ? nameLabels.get(name) : cur.label) || name
+        enabled: cur ? cur.enabled !== false : (restored ?? configured),
+        label: (nameLabels.has(name) ? nameLabels.get(name) : cur?.label) || name
       });
     }
 
@@ -546,6 +565,13 @@ function createActionsBus(opts = {}) {
     if (!namedStates.has(name)) return false;
     const info = namedStates.get(name);
     info.enabled = !!enabled;
+    if (onActionStateChange) {
+      try {
+        onActionStateChange(name, info.enabled);
+      } catch (err) {
+        if (onError) onError(err, { name }, null);
+      }
+    }
     return true;
   }
 
