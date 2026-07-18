@@ -87,23 +87,17 @@ function digitsFallbackPoints(deltaToken) {
 }
 
 // ---------- Публичные функции ----------
-function toPoints(hookTick, symbol, deltaPrice, priceHint, deltaTokenForFallback, allowZeroes = true) {
+function toPoints(hookTick, symbol, deltaPrice, priceHint, deltaTokenForFallback) {
   const dp = Number(deltaPrice);
   // 0) Пытаемся через tick пришедший с запросом
   if (Number.isFinite(hookTick) && hookTick > 0 && Number.isFinite(dp)) {
-    const points = Math.round(dp / hookTick);
-    if (points !== 0 || allowZeroes) {
-      return points;
-    }
+    return Math.round(dp / hookTick);
   }
 
   // 1) Пытаемся через tickSize
   const tick = findTickSizeFromConfig(symbol);
   if (Number.isFinite(tick) && tick > 0 && Number.isFinite(dp)) {
-    const points = Math.round(dp / tick);
-    if (points !== 0 || allowZeroes) {
-      return points;
-    }
+    return Math.round(dp / tick);
   }
 
   // 2) Цифровой fallback по сырому токену (строке)

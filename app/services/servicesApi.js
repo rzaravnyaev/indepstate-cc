@@ -8,6 +8,17 @@
  */
 
 /**
+ * @typedef {Object} InstrumentInfoApi
+ * @property {(context:any,options?:any) => Promise<any|null>} get
+ * @property {(context:any) => any|null} peek
+ * @property {(context:any) => Promise<boolean>} forget
+ * @property {(context:any,options?:any) => number} resolveTickSize
+ * @property {(context:any,options?:any) => {tickSize:number,source:string}} getTickSizeResolution
+ * @property {(context:any,deltaPrice:number,options?:any) => number|undefined} toPoints
+ * @property {(eventName:'updated',handler:Function) => Function} on
+ */
+
+/**
  * @typedef {Object} DealTrackersApi
  * @property {(info: any, opts?: any) => void} notifyPositionClosed
  * @property {(info: any, opts?: any) => boolean} shouldWritePositionClosed
@@ -41,6 +52,7 @@
 /**
  * @typedef {Object} ServicesApi
  * @property {BrokerageApi} [brokerage]
+ * @property {InstrumentInfoApi} [instrumentInfo]
  * @property {DealTrackersApi} [dealTrackers]
  * @property {DealTrackersChartImagesApi} [dealTrackersChartImages]
  * @property {NgrokApi} [ngrok]

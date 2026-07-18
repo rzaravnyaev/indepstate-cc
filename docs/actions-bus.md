@@ -72,6 +72,12 @@ the action payload symbol, which is useful for templates such as `stopOffsetPts:
 `distPtsPlus(a, b, extra)` does the same conversion and adds an extra point value in one direct helper
 call, avoiding unsupported nested expressions.
 
+`distPts` and `distPtsPlus` resolve tick size through the shared instrument-information service. A
+warm provider/symbol snapshot remains synchronous. On a cold cache the action waits for one metadata
+lookup (up to five seconds), then uses configured symbol/default fallback if the adapter has no
+authoritative metadata. Async helper resolution preserves binding order for the event. Snapshot
+changes are available to configured actions as `instrument-info:updated`.
+
 The expression layer is intentionally small: it supports direct calls such as
 `functionName({field})` or `functionName({a}, {b})`. It does not execute JavaScript and does not
 support nested function calls. Unknown functions render as an empty string and are reported through

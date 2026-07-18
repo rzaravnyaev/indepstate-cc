@@ -105,6 +105,8 @@ class CCXTExecutionAdapter extends ExecutionAdapter {
     this._binanceTimeOffsetUpdatedAt = 0;
     this._binanceExchangeInfoCache = null;
     this._binanceExchangeInfoLoadedAt = 0;
+    this._binanceExchangeInfoPromise = null;
+    this._binanceMetadataBySymbol = new Map();
 
     // Автоматичне забезпечення/скасування SL/TP по подіях позицій
     this.on('position:opened', async ({ ticket }) => {
@@ -201,13 +203,38 @@ class CCXTExecutionAdapter extends ExecutionAdapter {
 
   async _getBinanceSymbolFilters(symbol) {
     const info = await this._getBinanceExchangeInfo();
-    const row = (info?.symbols || []).find((s) => String(s?.symbol || '').toUpperCase() === String(symbol || '').toUpperCase());
+    const key = String(symbol || '').toUpperCase();
+    if (this._binanceMetadataBySymbol?.has(key)) return this._binanceMetadataBySymbol.get(key);
+    const row = (info?.symbols || []).find((s) => String(s?.symbol || '').toUpperCase() === key);
     if (!row) throw new Error(`Symbol ${symbol} not found in exchangeInfo`);
+    const metadata = this._parseBinanceSymbolMetadata(row);
+    if (!this._binanceMetadataBySymbol) this._binanceMetadataBySymbol = new Map();
+    this._binanceMetadataBySymbol.set(key, metadata);
+    return metadata;
+  }
+
+  _parseBinanceSymbolMetadata(row) {
     const filters = row.filters || [];
     const pf = filters.find((f) => f.filterType === 'PRICE_FILTER') || {};
     const lf = filters.find((f) => f.filterType === 'LOT_SIZE') || {};
     const mn = filters.find((f) => f.filterType === 'MIN_NOTIONAL') || {};
-    return { tickSize: Number(pf.tickSize || 0), stepSize: Number(lf.stepSize || 0), minNotional: Number(mn.notional || mn.minNotional || 0) };
+    return {
+      tickSize: Number(pf.tickSize || 0),
+      stepSize: Number(lf.stepSize || 0),
+      minQty: Number(lf.minQty || 0),
+      maxQty: Number(lf.maxQty || 0),
+      minNotional: Number(mn.notional || mn.minNotional || 0)
+    };
+  }
+
+  _cacheBinanceInstrumentMetadata(info) {
+    const next = new Map();
+    for (const row of info?.symbols || []) {
+      const key = String(row?.symbol || '').toUpperCase();
+      if (key) next.set(key, this._parseBinanceSymbolMetadata(row));
+    }
+    this._binanceMetadataBySymbol = next;
+    return next;
   }
 
   async _waitBinanceOrderFilled(symbol, clientOrderId, timeoutMs = 120000) {
@@ -652,10 +679,24 @@ class CCXTExecutionAdapter extends ExecutionAdapter {
     if (this._binanceExchangeInfoCache && now - this._binanceExchangeInfoLoadedAt < 5 * 60 * 1000) {
       return this._binanceExchangeInfoCache;
     }
-    const info = await this._binancePublicRequest('/fapi/v1/exchangeInfo');
-    this._binanceExchangeInfoCache = info;
-    this._binanceExchangeInfoLoadedAt = now;
-    return info;
+    if (this._binanceExchangeInfoPromise) return this._binanceExchangeInfoPromise;
+    this._binanceExchangeInfoPromise = this._binancePublicRequest('/fapi/v1/exchangeInfo')
+      .then(info => {
+        this._binanceExchangeInfoCache = info;
+        this._binanceExchangeInfoLoadedAt = Date.now();
+        this._cacheBinanceInstrumentMetadata(info);
+        return info;
+      })
+      .finally(() => {
+        this._binanceExchangeInfoPromise = null;
+      });
+    return this._binanceExchangeInfoPromise;
+  }
+
+  async preloadInstrumentMetadata() {
+    if (!this._isBinanceUsdmLike()) return null;
+    await this._getBinanceExchangeInfo();
+    return { symbols: this._binanceMetadataBySymbol.size };
   }
 
   async normalizeBinanceUsdmSymbol(input) {
@@ -2052,6 +2093,67 @@ class CCXTExecutionAdapter extends ExecutionAdapter {
    * @param {string} symbol - у форматі ccxt або локальний (буде змаплено)
    * @returns {Promise<{bid?:number, ask?:number, price?:number}|null>}
    */
+  async getInstrumentMetadata(symbol) {
+    try {
+      if (this._isBinanceUsdmLike()) {
+        const normalized = await this.normalizeBinanceUsdmSymbol(symbol);
+        const filters = await this._getBinanceSymbolFilters(normalized);
+        return {
+          tickSize: filters.tickSize,
+          quantityStep: filters.stepSize,
+          minQty: filters.minQty,
+          maxQty: filters.maxQty,
+          minNotional: filters.minNotional,
+          sources: {
+            tickSize: 'binance-exchangeInfo',
+            quantityStep: 'binance-exchangeInfo',
+            minQty: 'binance-exchangeInfo',
+            maxQty: 'binance-exchangeInfo',
+            minNotional: 'binance-exchangeInfo'
+          }
+        };
+      }
+
+      await this.ensureReady();
+      const mapped = this.mapSymbol(symbol);
+      let market;
+      try {
+        market = (this.exchange.markets && this.exchange.markets[mapped]) || this.exchange.market(mapped);
+      } catch {}
+
+      const amountPrecision = market?.precision?.amount;
+      let quantityStep;
+      if (this.exchange?.precisionMode === ccxt.TICK_SIZE && Number(amountPrecision) > 0) {
+        quantityStep = Number(amountPrecision);
+      } else if (Number.isInteger(amountPrecision) && amountPrecision >= 0 && amountPrecision <= 18) {
+        quantityStep = 10 ** (-amountPrecision);
+      } else if (Number.isFinite(Number(amountPrecision)) && Number(amountPrecision) > 0) {
+        quantityStep = Number(amountPrecision);
+      }
+
+      const source = 'ccxt-market';
+      return {
+        tickSize: this._getTickSizeFromMarket(mapped),
+        quantityStep,
+        minQty: Number(market?.limits?.amount?.min),
+        maxQty: Number(market?.limits?.amount?.max),
+        minNotional: Number(market?.limits?.cost?.min),
+        contractSize: Number(market?.contractSize),
+        sources: {
+          tickSize: source,
+          quantityStep: source,
+          minQty: source,
+          maxQty: source,
+          minNotional: source,
+          contractSize: 'ccxt-market'
+        }
+      };
+    } catch (err) {
+      console.error(`[${this.provider}] getInstrumentMetadata:error`, { symbol, message: err?.message || String(err) });
+      return null;
+    }
+  }
+
   async getQuote(symbol, quoteType = 'book') {
     let normalizedSymbol;
     let endpoint = this._binanceQuoteTypeToEndpoint(quoteType);

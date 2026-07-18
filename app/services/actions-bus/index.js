@@ -86,7 +86,7 @@ function distPts(a, b, payload = {}) {
   const gap = dist(a, b);
   if (gap === '') return '';
   const symbol = stripSymbol(payload?.symbol);
-  const pts = points.toPoints(null, symbol, gap, undefined, String(gap), false);
+  const pts = points.toPoints(null, symbol, gap, undefined, String(gap));
   return Number.isFinite(pts) ? pts : '';
 }
 
@@ -152,12 +152,60 @@ function createActionsBus(opts = {}) {
     commandRunners.set(DEFAULT_RUNNER_KEY, opts.commandRunner);
   }
   const onError = typeof opts.onError === 'function' ? opts.onError : null;
+  const instrumentInfo = opts.instrumentInfo;
+
+  function actionDistPts(a, b, payload = {}) {
+    const gap = dist(a, b);
+    if (gap === '') return '';
+    const symbol = stripSymbol(payload?.symbol);
+    const context = {
+      provider: payload?.provider || payload?.meta?.provider,
+      symbol,
+      instrumentType: payload?.instrumentType,
+      payload
+    };
+    const calculate = () => {
+      if (instrumentInfo && typeof instrumentInfo.toPoints === 'function') {
+        return instrumentInfo.toPoints(context, gap, {
+          explicitTickSize: payload?.tickSize,
+          deltaTokenForFallback: String(gap)
+        });
+      }
+      return points.toPoints(payload?.tickSize, symbol, gap, undefined, String(gap));
+    };
+    if (!instrumentInfo || typeof instrumentInfo.get !== 'function' || instrumentInfo.peek?.(context)) {
+      const value = calculate();
+      return Number.isFinite(value) ? value : '';
+    }
+    return instrumentInfo.get(context, { quote: false, timeoutMs: 5000 })
+      .then(() => {
+        const value = calculate();
+        return Number.isFinite(value) ? value : '';
+      })
+      .catch(() => {
+        const value = calculate();
+        return Number.isFinite(value) ? value : '';
+      });
+  }
+
+  function actionDistPtsPlus(a, b, extra, payload = {}) {
+    if (hasInvalidNumericArg([extra])) return '';
+    const finish = (rawPts) => {
+      if (rawPts === '') return '';
+      const pts = Number(rawPts);
+      const extraPts = Number(extra);
+      if (!Number.isFinite(pts) || !Number.isFinite(extraPts)) return '';
+      return add(pts, extraPts);
+    };
+    const rawPts = actionDistPts(a, b, payload);
+    return rawPts && typeof rawPts.then === 'function' ? rawPts.then(finish) : finish(rawPts);
+  }
 
   registerActionFunction('stripSymbol', stripSymbol);
   registerActionFunction('add', add);
   registerActionFunction('dist', dist);
-  registerActionFunction('distPts', distPts);
-  registerActionFunction('distPtsPlus', distPtsPlus);
+  registerActionFunction('distPts', actionDistPts);
+  registerActionFunction('distPtsPlus', actionDistPtsPlus);
   registerActionFunction('optionLegs', optionLegs);
   registerActionFunction('optionLegPair', optionLegPair);
 
@@ -226,8 +274,13 @@ function createActionsBus(opts = {}) {
     const queue = pending.get(key);
     if (!queue || queue.length === 0) return;
     pending.delete(key);
+    let chain = null;
     for (const item of queue) {
-      executeAction(item.entry, item.payload);
+      if (chain) chain = chain.then(() => executeAction(item.entry, item.payload));
+      else {
+        const result = executeAction(item.entry, item.payload);
+        if (result && typeof result.then === 'function') chain = result;
+      }
     }
   }
 
@@ -301,25 +354,51 @@ function createActionsBus(opts = {}) {
 
   function resolveCommand(template, payload, entry) {
     if (typeof template !== 'string') return '';
-    const expandedFunctions = template.replace(ACTION_FUNCTION_PATTERN, (match, fnName, rawArgs) => {
+    const matches = Array.from(template.matchAll(new RegExp(ACTION_FUNCTION_PATTERN.source, 'g')));
+    if (!matches.length) return resolvePlaceholders(template, payload);
+    const values = matches.map((match) => {
+      const [, fnName, rawArgs] = match;
       const fn = actionFunctions.get(fnName);
       if (typeof fn !== 'function') {
         if (onError) onError(new Error(`Unknown action function: ${fnName}`), entry, payload);
         return '';
       }
       try {
-        return formatActionValue(fn(...parseFunctionArgs(rawArgs, payload), payload, entry));
+        return fn(...parseFunctionArgs(rawArgs, payload), payload, entry);
       } catch (err) {
         if (onError) onError(err, entry, payload);
         return '';
       }
     });
-    return resolvePlaceholders(expandedFunctions, payload);
+    const build = (resolvedValues) => {
+      let expanded = '';
+      let offset = 0;
+      matches.forEach((match, index) => {
+        expanded += template.slice(offset, match.index) + formatActionValue(resolvedValues[index]);
+        offset = match.index + match[0].length;
+      });
+      expanded += template.slice(offset);
+      return resolvePlaceholders(expanded, payload);
+    };
+    if (values.some(value => value && typeof value.then === 'function')) {
+      return Promise.all(values.map(value => Promise.resolve(value).catch(err => {
+        if (onError) onError(err, entry, payload);
+        return '';
+      }))).then(build);
+    }
+    return build(values);
   }
 
   function executeAction(entry, payload) {
     const template = entry.commandTemplate || entry.command || '';
-    const cmd = resolveCommand(template, payload, entry);
+    const resolved = resolveCommand(template, payload, entry);
+    if (resolved && typeof resolved.then === 'function') {
+      return resolved.then(cmd => executeResolvedAction(cmd, entry, payload));
+    }
+    return executeResolvedAction(resolved, entry, payload);
+  }
+
+  function executeResolvedAction(cmd, entry, payload) {
     if (!cmd) return;
     const runnerKey = entry.runnerKey || DEFAULT_RUNNER_KEY;
     let runner = commandRunners.get(runnerKey);
@@ -416,13 +495,19 @@ function createActionsBus(opts = {}) {
 
     for (const [eventName, list] of grouped.entries()) {
       const handler = (payload) => {
+        let chain = null;
         for (const entry of list) {
           if (entry.name) {
             const state = namedStates.get(entry.name);
             if (state && state.enabled === false) continue;
           }
-          executeAction(entry, payload);
+          if (chain) chain = chain.then(() => executeAction(entry, payload));
+          else {
+            const result = executeAction(entry, payload);
+            if (result && typeof result.then === 'function') chain = result;
+          }
         }
+        return chain;
       };
       configHandlers.set(eventName, handler);
       emitter.on(eventName, handler);

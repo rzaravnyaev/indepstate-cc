@@ -1,7 +1,7 @@
 const assert = require('assert');
 const { createActionsBus } = require('../app/services/actions-bus');
 
-function run() {
+async function run() {
   const executed = [];
   const errors = [];
   const bus = createActionsBus({
@@ -152,12 +152,33 @@ function run() {
   assert.strictEqual(bus.unregisterActionFunction('joinSymbolLevel'), true);
   assert.ok(!bus.listActionFunctions().includes('joinSymbolLevel'));
 
+  let warm = false;
+  let lookups = 0;
+  const asyncExecuted = [];
+  const asyncBus = createActionsBus({
+    instrumentInfo: {
+      peek() { return warm ? { metadata: { tickSize: 0.5 } } : null; },
+      async get() { lookups += 1; warm = true; return { metadata: { tickSize: 0.5 } }; },
+      toPoints(_context, delta) { return Math.round(Number(delta) / 0.5); }
+    }
+  });
+  asyncBus.setCommandRunner(cmd => asyncExecuted.push(cmd));
+  asyncBus.configure([
+    { event: 'cold', action: 'first distPts({price},{rayPrice})' },
+    { event: 'cold', action: 'second {symbol}' }
+  ]);
+  asyncBus.emit('cold', { symbol: 'AAA', price: 11, rayPrice: 10 });
+  assert.deepStrictEqual(asyncExecuted, []);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.strictEqual(lookups, 1);
+  assert.deepStrictEqual(asyncExecuted, ['first 2', 'second AAA']);
+  asyncBus.emit('cold', { symbol: 'AAA', price: 10.1, rayPrice: 10 });
+  assert.deepStrictEqual(asyncExecuted.slice(-2), ['first 0', 'second AAA']);
+
   console.log('actionsBus tests passed');
 }
 
-try {
-  run();
-} catch (err) {
+run().catch(err => {
   console.error(err);
   process.exit(1);
-}
+});
