@@ -29,6 +29,9 @@ class ExecutionAdapter {
    */
   async getInstrumentMetadata(_symbol) { return null; }
 
+  // Optional non-blocking creation hook for adapters backed by one safe batch metadata request:
+  // async preloadInstrumentMetadata() {}
+
   async forgetQuote(_symbol) { return; }
 }
 module.exports = { ExecutionAdapter };

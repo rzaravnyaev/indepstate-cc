@@ -14,4 +14,5 @@ Use `bySymbol` for exact symbol-to-provider overrides, for example `"bySymbol": 
 Adapters may expose read-only data methods in addition to execution methods. MCP data tools call these through the adapter layer instead of reaching into provider-specific clients directly.
 
 - `getInstrumentMetadata(symbol)` returns any available stable `tickSize`, `quantityStep`, `minQty`, `maxQty`, `minNotional`, and `contractSize` rules. The shared instrument-information service caches these optional fields and records their provenance.
+- `preloadInstrumentMetadata()` is an optional non-blocking creation hook for adapters that can safely warm metadata with one batch request. The registry invokes it after caching a new adapter and logs failures without failing adapter creation.
 - `getHistoricBars({ symbol, timeframe, from, to, limit, timeoutMs })` returns normalized OHLCV bars sorted oldest to newest. `from` and `to` are JavaScript `Date` values or compatible inputs at the adapter boundary; public MCP input uses ISO strings. DWX implements this through `GET_HISTORIC_DATA`.
