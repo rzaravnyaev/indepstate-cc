@@ -121,6 +121,57 @@ async function run() {
   assert.strictEqual(placed.tp, 18); // stop*3 rule
   assert.strictEqual(placed.meta.stopPts, 6);
   assert.strictEqual(placed.meta.takePts, 18);
+
+  // LEVEL_OFFSET treats the card SL as the extra distance beyond the level.
+  placed = undefined;
+  const levelOffsetHub = new PendingOrderHub({
+    queuePlaceOrder: async (o) => { placed = o; },
+    subscribe: () => {},
+    wireAdapter: () => {},
+    getAdapter: () => ({}),
+    resolveProvider: resolver.resolveProvider,
+    strategyConfig: {
+      consolidation: { bars: 1, stoppLossRule: 'LEVEL_OFFSET' }
+    }
+  });
+
+  const levelOffsetQueued = levelOffsetHub.queuePlacePending({
+    ticker: 'TEST',
+    price: 100,
+    side: 'long',
+    instrumentType: 'EQ',
+    tickSize: 0.5,
+    meta: { qty: 1, riskUsd: 12, stopPts: 2 }
+  });
+  assert.strictEqual(levelOffsetQueued.status, 'ok');
+
+  events.emit('bar', {
+    provider: levelOffsetQueued.provider,
+    symbol: 'TEST',
+    tf: 'M1',
+    open: 99,
+    high: 102,
+    low: 98,
+    close: 101
+  });
+  await waitFor(() => placed);
+
+  assert.ok(placed, 'level-offset order was not sent for execution');
+  assert.strictEqual(placed.price, 102);
+  assert.strictEqual(placed.sl, 6); // 4 pts entry-to-level + 2 pts beyond level
+  assert.strictEqual(placed.meta.stopPts, 6);
+  assert.strictEqual(placed.qty, 4); // $12 / (6 pts * $0.50)
+
+  const invalidLevelOffset = levelOffsetHub.queuePlacePending({
+    ticker: 'TEST',
+    price: 100,
+    side: 'long',
+    instrumentType: 'EQ',
+    tickSize: 0.5,
+    meta: { qty: 1, riskUsd: 12 }
+  });
+  assert.strictEqual(invalidLevelOffset.status, 'rejected');
+  assert.match(invalidLevelOffset.reason, /stopOffsetPts > 0/);
   console.log('pendingOrdersHub tests passed');
 }
 

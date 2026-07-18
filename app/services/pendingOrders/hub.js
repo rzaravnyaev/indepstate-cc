@@ -187,114 +187,130 @@ class PendingOrderHub {
       }
       : async () => null;
 
-    const pendingId = this.addOrder(providerName, symbol, {
-      price: Number(payload.price),
-      side: payload.side,
-      strategy: payload.strategy,
-      tickSize: payload.tickSize,
-      bars: payload.bars,
-      priceSource: payload.priceSource,
-      historyBars,
-      historyTimeframe,
-      historyLoader,
-      getQuote,
-      symbol,
-      onExecute: async ({ limitPrice, stopLoss, takeProfit }) => {
-        this.pendingIndex.delete(pendingId);
+    let pendingId;
+    try {
+      pendingId = this.addOrder(providerName, symbol, {
+        price: Number(payload.price),
+        side: payload.side,
+        strategy: payload.strategy,
+        tickSize: payload.tickSize,
+        stopOffsetPts: payload.meta?.stopPts,
+        bars: payload.bars,
+        priceSource: payload.priceSource,
+        historyBars,
+        historyTimeframe,
+        historyLoader,
+        getQuote,
+        symbol,
+        onExecute: async ({ limitPrice, stopLoss, takeProfit }) => {
+          this.pendingIndex.delete(pendingId);
 
-        const instrumentSnapshot = await getInstrumentSnapshot({ forceQuote: true });
-        const effectiveTickSize = this.instrumentInfo?.resolveTickSize(
-          { provider: providerName, symbol, instrumentType: payload.instrumentType, payload },
-          { explicitTickSize: payload.tickSize }
-        ) || instrumentSnapshot?.metadata?.tickSize;
+          const instrumentSnapshot = await getInstrumentSnapshot({ forceQuote: true });
+          const effectiveTickSize = this.instrumentInfo?.resolveTickSize(
+            { provider: providerName, symbol, instrumentType: payload.instrumentType, payload },
+            { explicitTickSize: payload.tickSize }
+          ) || instrumentSnapshot?.metadata?.tickSize;
 
-        let stopPts;
-        let takePts;
-        let qty;
-        const risk = Number(payload.meta?.riskUsd);
+          let stopPts;
+          let takePts;
+          let qty;
+          const risk = Number(payload.meta?.riskUsd);
 
-        if (Number.isFinite(effectiveTickSize) && effectiveTickSize > 0) {
-          stopPts = orderCalc.stopPts({
-            tickSize: effectiveTickSize,
-            symbol,
-            entryPrice: limitPrice,
-            stopPrice: stopLoss,
-            instrumentType: payload.instrumentType
-          });
-          takePts = orderCalc.takePts(stopPts);
-          if (Number.isFinite(risk) && risk > 0) {
-            qty = orderCalc.qty({
-              riskUsd: risk,
-              stopPts,
+          if (Number.isFinite(effectiveTickSize) && effectiveTickSize > 0) {
+            stopPts = orderCalc.stopPts({
               tickSize: effectiveTickSize,
-              lot: payload.lot,
-              instrumentType: payload.instrumentType,
-              quantityStep: instrumentSnapshot?.metadata?.quantityStep
+              symbol,
+              entryPrice: limitPrice,
+              stopPrice: stopLoss,
+              instrumentType: payload.instrumentType
             });
+            takePts = orderCalc.takePts(stopPts);
+            if (Number.isFinite(risk) && risk > 0) {
+              qty = orderCalc.qty({
+                riskUsd: risk,
+                stopPts,
+                tickSize: effectiveTickSize,
+                lot: payload.lot,
+                instrumentType: payload.instrumentType,
+                quantityStep: instrumentSnapshot?.metadata?.quantityStep
+              });
+            } else {
+              qty = Number(payload.meta?.qty || payload.qty || 0);
+            }
           } else {
+            stopPts = Number(payload.meta?.stopPts ?? payload.sl);
+            takePts = Number(payload.meta?.takePts ?? payload.tp);
             qty = Number(payload.meta?.qty || payload.qty || 0);
           }
-        } else {
-          stopPts = Number(payload.meta?.stopPts ?? payload.sl);
-          takePts = Number(payload.meta?.takePts ?? payload.tp);
-          qty = Number(payload.meta?.qty || payload.qty || 0);
-        }
 
-        const hasStopPts = Number.isFinite(stopPts) && stopPts > 0;
-        const stopLossPrice = Number(stopLoss);
-        const hasStopLossPrice = Number.isFinite(stopLossPrice) && stopLossPrice > 0;
-        if (!hasStopPts && !hasStopLossPrice) {
-          throw new Error(`No stop points/stop loss for ${symbol}; cannot execute pending order`);
-        }
-
-        const finalPayload = {
-          symbol,
-          side: payload.side === 'long' ? 'buy' : 'sell',
-          type: 'limit',
-          price: limitPrice,
-          provider: providerName,
-          instrumentType: payload.instrumentType,
-          tickSize: effectiveTickSize,
-          qty,
-          sl: hasStopPts ? stopPts : undefined,
-          tp: Number.isFinite(takePts) && takePts > 0 ? takePts : undefined,
-          stopLossPrice: hasStopPts ? undefined : stopLossPrice,
-          takeProfitPrice: Number.isFinite(takePts) && takePts > 0 ? undefined : (Number.isFinite(Number(takeProfit)) ? Number(takeProfit) : undefined),
-          meta: {
-            ...payload.meta,
-            ...(Number(instrumentSnapshot?.metadata?.quantityStep) > 0 ? { quantityStep: Number(instrumentSnapshot.metadata.quantityStep) } : {}),
-            riskUsd: Number.isFinite(risk) ? risk : payload.meta?.riskUsd,
-            ...(hasStopPts ? { stopPts } : {}),
-            ...(Number.isFinite(takePts) && takePts > 0 ? { takePts } : {}),
-            ...(!Number.isFinite(effectiveTickSize) || effectiveTickSize <= 0 ? { riskBasedQtyPending: true } : {})
+          const hasStopPts = Number.isFinite(stopPts) && stopPts > 0;
+          const stopLossPrice = Number(stopLoss);
+          const hasStopLossPrice = Number.isFinite(stopLossPrice) && stopLossPrice > 0;
+          if (!hasStopPts && !hasStopLossPrice) {
+            throw new Error(`No stop points/stop loss for ${symbol}; cannot execute pending order`);
           }
-        };
-        try {
-          await this.queuePlaceOrder(finalPayload);
-        } catch (err) {
-          console.error('pending order execution failed', err);
-        }
-      },
-      onCancel: () => {
-        this.pendingIndex.delete(pendingId);
-        appendJsonl(EXEC_LOG, {
-          t: nowTs(),
-          kind: 'pending-cancelled',
-          reqId,
-          provider: providerName,
-          pendingId,
-          order: { symbol, side: payload.side, strategy: payload.strategy || 'falseBreak' }
-        });
-        if (this.mainWindow && !this.mainWindow.isDestroyed()) {
-          this.mainWindow.webContents.send('execution:result', {
-            status: 'rejected',
-            reason: 'trigger not satisfied',
+
+          const finalPayload = {
+            symbol,
+            side: payload.side === 'long' ? 'buy' : 'sell',
+            type: 'limit',
+            price: limitPrice,
+            provider: providerName,
+            instrumentType: payload.instrumentType,
+            tickSize: effectiveTickSize,
+            qty,
+            sl: hasStopPts ? stopPts : undefined,
+            tp: Number.isFinite(takePts) && takePts > 0 ? takePts : undefined,
+            stopLossPrice: hasStopPts ? undefined : stopLossPrice,
+            takeProfitPrice: Number.isFinite(takePts) && takePts > 0 ? undefined : (Number.isFinite(Number(takeProfit)) ? Number(takeProfit) : undefined),
+            meta: {
+              ...payload.meta,
+              ...(Number(instrumentSnapshot?.metadata?.quantityStep) > 0 ? { quantityStep: Number(instrumentSnapshot.metadata.quantityStep) } : {}),
+              riskUsd: Number.isFinite(risk) ? risk : payload.meta?.riskUsd,
+              ...(hasStopPts ? { stopPts } : {}),
+              ...(Number.isFinite(takePts) && takePts > 0 ? { takePts } : {}),
+              ...(!Number.isFinite(effectiveTickSize) || effectiveTickSize <= 0 ? { riskBasedQtyPending: true } : {})
+            }
+          };
+          try {
+            await this.queuePlaceOrder(finalPayload);
+          } catch (err) {
+            console.error('pending order execution failed', err);
+          }
+        },
+        onCancel: () => {
+          this.pendingIndex.delete(pendingId);
+          appendJsonl(EXEC_LOG, {
+            t: nowTs(),
+            kind: 'pending-cancelled',
             reqId,
-            order: { symbol, side: payload.side, meta: payload.meta }
+            provider: providerName,
+            pendingId,
+            order: { symbol, side: payload.side, strategy: payload.strategy || 'falseBreak' }
           });
+          if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+            this.mainWindow.webContents.send('execution:result', {
+              status: 'rejected',
+              reason: 'trigger not satisfied',
+              reqId,
+              order: { symbol, side: payload.side, meta: payload.meta }
+            });
+          }
         }
-      }
-    });
+      });
+    } catch (err) {
+      const reason = err?.message || String(err);
+      const rejected = { status: 'rejected', provider: providerName, reason };
+      appendJsonl(EXEC_LOG, {
+        t: ts,
+        kind: 'pending-rejected',
+        reqId,
+        provider: providerName,
+        order: { symbol, side: payload.side, strategy: payload.strategy || 'consolidation' },
+        result: rejected
+      });
+      return rejected;
+    }
 
     appendJsonl(EXEC_LOG, {
       t: ts,
