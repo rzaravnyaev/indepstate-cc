@@ -58,7 +58,6 @@ function initService(servicesApi = {}) {
   const bus = servicesApi.actionBus && typeof servicesApi.actionBus.emit === 'function'
     ? servicesApi.actionBus
     : createActionsBus({
-        instrumentInfo: servicesApi.instrumentInfo,
         initialActionStates: savedStates,
         onActionStateChange: saveActionState,
         onError(err, entry) {
@@ -67,11 +66,6 @@ function initService(servicesApi = {}) {
       });
 
   servicesApi.actionBus = bus;
-
-  if (servicesApi.instrumentInfo && typeof servicesApi.instrumentInfo.on === 'function' && !bus.__instrumentInfoBridge) {
-    bus.__instrumentInfoBridge = true;
-    servicesApi.instrumentInfo.on('updated', snapshot => bus.emit('instrument-info:updated', snapshot));
-  }
 
   const enabled = cfg.enabled !== false;
   if (enabled && Array.isArray(cfg.actions)) {

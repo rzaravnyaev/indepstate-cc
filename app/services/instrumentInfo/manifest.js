@@ -1,52 +1,35 @@
+const path = require('path');
+const settings = require('../settings');
+const points = require('./points');
 const { createInstrumentInfoService } = require('.');
-const { detectInstrumentType } = require('../instruments');
+const { createInstrumentInfoActionFunctions } = require('./actionFunctions');
 
-function normalizeProvider(value) {
-  return String(value || '').trim().toLowerCase();
+settings.register(
+  'tick-sizes',
+  path.join(__dirname, 'config', 'tick-sizes.json'),
+  path.join(__dirname, 'config', 'tick-sizes-settings-descriptor.json')
+);
+
+settings.onApply('tick-sizes', ({ config }) => {
+  points.configure(config);
+});
+
+function registerActionFunctions(servicesApi = {}) {
+  const bus = servicesApi.actionBus;
+  const instrumentInfo = servicesApi.instrumentInfo;
+  if (!bus || typeof bus.registerActionFunction !== 'function' || !instrumentInfo) return [];
+  const actionFunctions = createInstrumentInfoActionFunctions(instrumentInfo);
+  return Object.entries(actionFunctions)
+    .map(([name, fn]) => bus.registerActionFunction(name, fn))
+    .filter(Boolean);
 }
 
-function isBinanceCcxtProvider(config) {
-  const adapter = String(config?.adapter || '').trim().toLowerCase();
-  const exchangeId = String(config?.exchangeId || '').trim().toLowerCase();
-  return (adapter === 'ccxt' || adapter.startsWith('ccxt-'))
-    && ['binance', 'binanceusdm', 'binance-futures', 'binancefutures'].includes(exchangeId);
-}
-
-function findConfiguredMetadataPreloadProviders(brokerage) {
-  const cfg = brokerage?.getExecutionConfig?.() || {};
-  const providers = cfg.providers || {};
-  const candidates = new Set();
-  const cxProvider = normalizeProvider(cfg.byInstrumentType?.CX);
-  if (cxProvider) candidates.add(cxProvider);
-  else {
-    const defaultProvider = normalizeProvider(cfg.default);
-    if (defaultProvider) candidates.add(defaultProvider);
-  }
-  for (const [symbol, provider] of Object.entries(cfg.bySymbol || {})) {
-    if (detectInstrumentType(String(symbol || '')) === 'CX') {
-      const normalized = normalizeProvider(provider);
-      if (normalized) candidates.add(normalized);
-    }
-  }
-  return Array.from(candidates).filter(provider => isBinanceCcxtProvider(providers[provider]));
-}
-
-function prewarmConfiguredInstrumentMetadata(brokerage, {
-  schedule = typeof setImmediate === 'function' ? setImmediate : (fn => setTimeout(fn, 0)),
-  onError = (err, provider) => console.error('[instrumentInfo] metadata prewarm failed', provider, err?.message || err)
-} = {}) {
-  const providers = findConfiguredMetadataPreloadProviders(brokerage);
-  if (!providers.length) return providers;
-  schedule(() => {
-    for (const provider of providers) {
-      try {
-        brokerage.getAdapter(provider);
-      } catch (err) {
-        onError(err, provider);
-      }
-    }
-  });
-  return providers;
+function bridgeUpdatedEvents(servicesApi = {}) {
+  const bus = servicesApi.actionBus;
+  const instrumentInfo = servicesApi.instrumentInfo;
+  if (!bus || !instrumentInfo || typeof instrumentInfo.on !== 'function' || bus.__instrumentInfoBridge) return false;
+  bus.__instrumentInfoBridge = instrumentInfo.on('updated', snapshot => bus.emit('instrument-info:updated', snapshot));
+  return true;
 }
 
 function initService(servicesApi = {}) {
@@ -58,15 +41,11 @@ function initService(servicesApi = {}) {
       }
     });
   }
-  if (!servicesApi.__instrumentMetadataPrewarmScheduled) {
-    servicesApi.__instrumentMetadataPrewarmScheduled = true;
-    prewarmConfiguredInstrumentMetadata(servicesApi.brokerage);
-  }
+  settings.onApply('tick-sizes', () => {
+    servicesApi.instrumentInfo?.invalidateConfigTickSizes?.();
+  });
+  registerActionFunctions(servicesApi);
+  bridgeUpdatedEvents(servicesApi);
 }
 
-module.exports = {
-  initService,
-  isBinanceCcxtProvider,
-  findConfiguredMetadataPreloadProviders,
-  prewarmConfiguredInstrumentMetadata
-};
+module.exports = { initService, registerActionFunctions, bridgeUpdatedEvents };

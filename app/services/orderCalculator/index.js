@@ -21,7 +21,7 @@ class OrderCalculator {
 
   // Calculate stop loss points from entry and stop prices
   stopPts({ tickSize, symbol, entryPrice, stopPrice, instrumentType }) {
-    const { toPoints } = require('../points');
+    const { toPoints } = require('../instrumentInfo/points');
     let pts = toPoints(tickSize, symbol, Math.abs(entryPrice - stopPrice), entryPrice);
 
     const tr = this.tradeRules;

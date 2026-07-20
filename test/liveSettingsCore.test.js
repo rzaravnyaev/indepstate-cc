@@ -1,6 +1,6 @@
 const assert = require('assert');
 
-const points = require('../app/services/points');
+const points = require('../app/services/instrumentInfo/points');
 const tradeRules = require('../app/services/tradeRules');
 const orderCalculator = require('../app/services/orderCalculator');
 const adapterRegistry = require('../app/services/brokerage/adapterRegistry');

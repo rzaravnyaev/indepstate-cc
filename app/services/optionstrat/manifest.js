@@ -2,6 +2,7 @@ const path = require('path');
 const settings = require('../settings');
 const loadConfig = require('../../config/load');
 const { createOptionStratCommands } = require('./command');
+const { optionLegs, optionLegPair } = require('./actionFunctions');
 
 settings.register(
   'optionstrat',
@@ -9,7 +10,17 @@ settings.register(
   path.join(__dirname, 'config', 'optionstrat-settings-descriptor.json')
 );
 
+function registerActionFunctions(servicesApi = {}) {
+  const bus = servicesApi.actionBus;
+  if (!bus || typeof bus.registerActionFunction !== 'function') return [];
+  return [
+    bus.registerActionFunction('optionLegs', optionLegs),
+    bus.registerActionFunction('optionLegPair', optionLegPair)
+  ].filter(Boolean);
+}
+
 function initService(servicesApi = {}) {
+  registerActionFunctions(servicesApi);
   let cfg = {};
   try {
     cfg = loadConfig('../services/optionstrat/config/optionstrat.json');
@@ -31,4 +42,4 @@ function initService(servicesApi = {}) {
   });
 }
 
-module.exports = { initService };
+module.exports = { initService, registerActionFunctions };
