@@ -7,7 +7,7 @@ const tradeRules = servicesApi.tradeRules || require('./services/tradeRules');
 const {detectInstrumentType} = require("./services/instruments");
 const {resolveTickSize} = require('./services/points');
 const orderCalc = servicesApi.orderCalculator || require('./services/orderCalculator');
-const { resolveLevelOrderDefaults } = require('./services/levelOrder/strategy');
+const { resolveLevelOrderDefaults, normalizePriceSource, resolveQuotePrice } = require('./services/levelOrder/strategy');
 const orderCardsCfg = loadConfig('../services/orderCards/config/order-cards.json');
 let levelOrderCfg = loadConfig('../services/levelOrder/config/level-order.json');
 const envEquityStop = Number(process.env.DEFAULT_EQUITY_STOP_USD);
@@ -1380,7 +1380,7 @@ function createCard(row, index) {
   const btns = el('div', 'btns');
   const mk = (label, cls, kind) => {
     const b = btn(label, cls, async () => {
-      const v = body.validate();
+      const v = row.cardType === 'levelOrder' ? body.validate(kind) : body.validate();
       if (!v.valid) return;
       if (row.cardType === 'levelOrder') {
         await placeLevelOrder(kind, row, v, instrumentType, label);
@@ -1477,7 +1477,7 @@ function createLevelOrderBody(row, key, $pointSize) {
     setNote($note) {
       this._note = $note;
     },
-    validate() {
+    validate(actionForValidation) {
       const level = _normNum($level.value);
       const risk = _normNum($risk.value);
       const stopOffsetPts = _normNum($stopOffset.value);
@@ -1485,7 +1485,12 @@ function createLevelOrderBody(row, key, $pointSize) {
       const takeProfitPts = _normNum($tp.value);
       const pointSize = _normNum($pointSize?.value);
       const info = instrumentInfo.get(row.ticker);
-      const bidOk = Number.isFinite(Number(info?.bid)) && Number(info.bid) > 0;
+      const bid = Number(info?.bid);
+      const ask = Number(info?.ask);
+      const buyPriceSource = normalizePriceSource(defaults.buyPriceSource, 'ask');
+      const sellPriceSource = normalizePriceSource(defaults.sellPriceSource, 'bid');
+      const sourceForAction = action => String(action || '').toUpperCase() === 'LS' ? sellPriceSource : buyPriceSource;
+      const quoteForAction = action => resolveQuotePrice({ bid, ask, source: sourceForAction(action) });
       const pointSizeOk = !$pointSize || $pointSize.value === '' || (Number.isFinite(pointSize) && pointSize > 0);
       const tick = pointSizeOk && Number.isFinite(pointSize) && pointSize > 0 ? pointSize : tickSize(row);
       const tickOk = Number.isFinite(tick) && tick > 0;
@@ -1493,7 +1498,15 @@ function createLevelOrderBody(row, key, $pointSize) {
       const minLotOk = Number.isFinite(minLot) && minLot > 0;
       const tpOk = $tp.value === '' || (Number.isFinite(takeProfitPts) && takeProfitPts > 0);
       const maxLotOk = Number.isFinite(maxLot) && maxLot >= 0;
-      const valid = isPos(level) && isPos(risk) && isSL(stopOffsetPts) && maxLotOk && minLotOk && tpOk && pointSizeOk && bidOk && tickOk;
+      const commonValid = isPos(level) && isPos(risk) && isSL(stopOffsetPts) && maxLotOk && minLotOk && tpOk && pointSizeOk && tickOk;
+      const quoteByAction = {
+        LB: quoteForAction('LB'),
+        LS: quoteForAction('LS')
+      };
+      const requestedActionRaw = String(actionForValidation || '').toUpperCase();
+      const requestedAction = requestedActionRaw === 'LB' || requestedActionRaw === 'LS' ? requestedActionRaw : '';
+      const quoteOk = action => quoteByAction[action]?.ok === true;
+      const valid = commonValid && (requestedAction ? quoteOk(requestedAction) : quoteOk('LB') && quoteOk('LS'));
 
       line.classList.toggle('card--invalid', !valid);
       const setErr = (inp, bad) => inp.classList.toggle('input--error', !!bad);
@@ -1504,19 +1517,28 @@ function createLevelOrderBody(row, key, $pointSize) {
       setErr($tp, !tpOk);
       if ($pointSize) setErr($pointSize, !pointSizeOk);
 
-      const reason = !isPos(level) ? 'Level > 0'
+      const commonReason = !isPos(level) ? 'Level > 0'
         : !isPos(risk) ? 'Risk $ > 0'
           : !isSL(stopOffsetPts) ? 'Stop offset pts > 0'
             : !maxLotOk ? 'Max lot >= 0'
               : !minLotOk ? 'Min lot > 0'
                 : !tpOk ? 'TP pts > 0 or blank'
                   : !pointSizeOk ? 'Point price > 0 or blank'
-                    : !bidOk ? 'Bid quote required'
-                      : !tickOk ? 'Tick size required'
-                        : '';
+                    : !tickOk ? 'Tick size required'
+                      : '';
+      const quoteReason = requestedAction && !quoteOk(requestedAction)
+        ? quoteByAction[requestedAction]?.reason
+        : !quoteOk('LB') ? quoteByAction.LB.reason
+          : !quoteOk('LS') ? quoteByAction.LS.reason
+            : '';
+      const reason = commonReason || quoteReason;
+      const buttonReason = action => commonReason || (!quoteOk(action) ? quoteByAction[action]?.reason : '');
       if (this._btns) this._btns.querySelectorAll('button').forEach(b => {
-        b.disabled = !valid;
-        if (!valid) b.title = reason; else b.removeAttribute('title');
+        const action = String(b.dataset.kind || '').toUpperCase();
+        const buttonValid = commonValid && quoteOk(action);
+        b.disabled = !buttonValid;
+        const title = buttonReason(action);
+        if (title) b.title = title; else b.removeAttribute('title');
       });
       if (this._note) {
         this._note.textContent = reason;
@@ -1532,6 +1554,8 @@ function createLevelOrderBody(row, key, $pointSize) {
         maxLot,
         minLot,
         takeProfitPts: $tp.value === '' ? null : takeProfitPts,
+        buyPriceSource,
+        sellPriceSource,
         pointSize: $pointSize && $pointSize.value !== '' ? pointSize : null,
         tickSize: tick
       };
@@ -2682,6 +2706,8 @@ async function placeLevelOrder(kind, row, v, instrumentType, btnLabel) {
       maxLot: v.maxLot,
       minLot: v.minLot,
       takeProfitPts: v.takeProfitPts,
+      buyPriceSource: v.buyPriceSource,
+      sellPriceSource: v.sellPriceSource,
       pointSize: v.pointSize,
       tickSize: v.tickSize,
       requestId,

@@ -40,7 +40,9 @@ Config shape:
     "maxLot": 0,
     "minLot": 1,
     "stopOffsetPts": 10,
-    "takeProfitPts": null
+    "takeProfitPts": null,
+    "buyPriceSource": "ask",
+    "sellPriceSource": "bid"
   },
   "symbols": []
 }
@@ -51,7 +53,11 @@ Config shape:
 - `minLot`: minimum quantity step for sizing and split remainders. `1` keeps whole-number sizing; `0.01` allows quantities like `12.34`.
 - `stopOffsetPts`: stop offset from the level, in points.
 - `takeProfitPts`: optional take-profit distance in points. `null` or blank means no TP is sent.
+- `buyPriceSource`: quote side used by `LB` / `BL`; one of `bid`, `ask`, or `mid`. Default is `ask`.
+- `sellPriceSource`: quote side used by `LS` / `SL`; one of `bid`, `ask`, or `mid`. Default is `bid`.
 - `symbols`: ticker-specific overrides with the same fields plus `ticker`.
+
+`mid` is calculated as `(bid + ask) / 2` and requires both quote sides.
 
 Example:
 
@@ -64,7 +70,9 @@ Example:
       "maxLot": 200,
       "minLot": 0.01,
       "stopOffsetPts": 4,
-      "takeProfitPts": null
+      "takeProfitPts": null,
+      "buyPriceSource": "ask",
+      "sellPriceSource": "bid"
     }
   ]
 }
@@ -85,29 +93,30 @@ A level-order card shows:
 
 Buttons:
 
-- `LB`: limit buy at current bid.
-- `LS`: limit sell at current bid.
+- `LB`: limit buy at the configured buy price source. Default: current ask.
+- `LS`: limit sell at the configured sell price source. Default: current bid.
 
 ## Execution
 
-The renderer sends `level-order:place` to the main process. The main process runs the `limitBidTrade` flow:
+The renderer sends `level-order:place` to the main process. The main process runs the level-order flow:
 
 1. Resolve provider through regular execution routing.
 2. Get quote through `adapter.getQuote(symbol)`.
-3. Require a finite bid.
-4. For `LB`, reject when `bid < level`.
-5. For `LS`, reject when `bid > level`.
-6. Compute level distance in points: `abs(bid - level) / tickSize`.
-7. Add `stopOffsetPts` to get the full stop distance.
-8. Compute stop price:
+3. Resolve the button's configured quote source: `bid`, `ask`, or `mid`.
+4. Require the selected quote side. `mid` requires both bid and ask.
+5. For `LB`, reject when the selected price is below level.
+6. For `LS`, reject when the selected price is above level.
+7. Compute level distance in points: `abs(selectedPrice - level) / tickSize`.
+8. Add `stopOffsetPts` to get the full stop distance.
+9. Compute stop price:
    - buy: `level - stopOffsetPts * tickSize`
    - sell: `level + stopOffsetPts * tickSize`
-9. Size total quantity from `riskUsd` and full stop distance.
-10. Round total quantity down to the configured `minLot` step.
-11. Split total quantity by `maxLot` when `maxLot > 0`, preserving the final remainder at the same `minLot` step.
-12. Submit every child order through the existing `queue-place-order` normalization path.
+10. Size total quantity from `riskUsd` and full stop distance.
+11. Round total quantity down to the configured `minLot` step.
+12. Split total quantity by `maxLot` when `maxLot > 0`, preserving the final remainder at the same `minLot` step.
+13. Submit every child order through the existing `queue-place-order` normalization path.
 
-Each child order is a limit order at current bid. Metadata includes `strategy: "limitBidTrade"`, `strategyId`, `parentRequestId`, `childIndex`, `childCount`, and `fixedQty: true`.
+Each child order is a limit order at the selected quote price. Metadata includes `strategy: "limitBidTrade"`, `strategyId`, `parentRequestId`, `childIndex`, `childCount`, `fixedQty: true`, `bid`, `ask`, `priceSource`, and `referencePrice`.
 
 `fixedQty: true` prevents the normal order queue from resizing child orders again.
 

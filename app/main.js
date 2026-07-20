@@ -1059,6 +1059,7 @@ function setupIpc(orderSvc) {
       wireAdapter(adapter, providerName);
       const quote = await adapter.getQuote?.(symbol);
       const bid = Number(quote?.bid);
+      const ask = Number(quote?.ask);
       const tickSize = resolveTickSize({
         symbol,
         explicitTickSize: payload.tickSize,
@@ -1076,6 +1077,9 @@ function setupIpc(orderSvc) {
         minLot: payload.minLot,
         takeProfitPts: payload.takeProfitPts,
         bid,
+        ask,
+        buyPriceSource: payload.buyPriceSource,
+        sellPriceSource: payload.sellPriceSource,
         tickSize,
         lot: payload.lot || 1,
         orderCalculator: orderCalc
@@ -1092,7 +1096,7 @@ function setupIpc(orderSvc) {
         const childPayload = {
           ticker: symbol,
           event: 'levelOrder',
-          price: plan.bid,
+          price: plan.referencePrice,
           kind: plan.orderKind,
           instrumentType,
           tickSize: plan.tickSize,
@@ -1111,6 +1115,9 @@ function setupIpc(orderSvc) {
             childCount: plan.childQtys.length,
             level: plan.level,
             bid: plan.bid,
+            ask: plan.ask,
+            priceSource: plan.priceSource,
+            referencePrice: plan.referencePrice,
             stopOffsetPts: plan.stopOffsetPts,
             minLot: plan.minLot,
             quantityStep: plan.minLot,

@@ -4,7 +4,9 @@
     "maxLot": 0,
     "minLot": 1,
     "stopOffsetPts": 10,
-    "takeProfitPts": null
+    "takeProfitPts": null,
+    "buyPriceSource": "ask",
+    "sellPriceSource": "bid"
   },
   "symbols": []
 }
