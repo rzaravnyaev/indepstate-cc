@@ -52,6 +52,7 @@ function deepMerge(target, source, desc) {
   if (!source || typeof source !== 'object') return target;
   const allowUnknown = desc && desc.__allowUnknown;
   for (const key of Object.keys(source)) {
+    if (String(key).startsWith('__')) continue;
     const srcVal = source[key];
     if (!(key in target)) {
       if (allowUnknown) {

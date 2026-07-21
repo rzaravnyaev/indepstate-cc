@@ -16,6 +16,7 @@ with a `name` exposes a checkbox that enables or disables the action at runtime.
     {
       "name": "TradingView automation",
       "label": "TV auto-lines",
+      "enabled": false,
       "bindings": [
         {
           "event": "tv-tool-horzline",
@@ -45,8 +46,10 @@ Objects are stringified and missing values resolve to empty strings.
   - `name` (optional) – identifier that groups bindings under a toggle. Named actions run only when
     the corresponding checkbox is enabled in the toolbar.
   - `label` (optional) – display name for the toggle. Defaults to `name` when omitted.
+  - `enabled` (optional) – initial state for a named action when no saved toggle state exists.
+    Defaults to `true`. A state saved through the toolbar takes precedence on later starts.
   - `bindings` (optional) – array of `{ event, action }` objects. Each binding inherits the parent's
-    `name` and `label` and runs only when the toggle is enabled.
+    `name`, `label`, and `enabled` default and runs only when the toggle is enabled.
 
 The configuration order determines the toggle order in the UI. Removing an action from the config also
 removes its toggle on the next reload.
@@ -71,6 +74,12 @@ Function arguments are resolved from payload placeholders before invocation. The
 the action payload symbol, which is useful for templates such as `stopOffsetPts:distPts({price},{rayPrice})`.
 `distPtsPlus(a, b, extra)` does the same conversion and adds an extra point value in one direct helper
 call, avoiding unsupported nested expressions.
+
+`distPts` and `distPtsPlus` resolve tick size through the shared instrument-information service. A
+warm provider/symbol snapshot remains synchronous. On a cold cache the action waits for one metadata
+lookup (up to five seconds), then uses configured symbol/default fallback if the adapter has no
+authoritative metadata. Async helper resolution preserves binding order for the event. Snapshot
+changes are available to configured actions as `instrument-info:updated`.
 
 The expression layer is intentionally small: it supports direct calls such as
 `functionName({field})` or `functionName({a}, {b})`. It does not execute JavaScript and does not
@@ -107,7 +116,10 @@ arguments: the rendered command string, the action entry and the original payloa
 
 `actions-bus:hookRenderer` populates `<div id="actions-bus-toggles">` with one checkbox per named
 action. Toggling a checkbox invokes `actions-bus:set-enabled` and the main process replies with the
-updated state so the UI re-renders. When no named actions exist the container remains hidden.
+updated state so the UI re-renders. Named toggle states are saved to `actions-bus-state.json` in
+Electron's user-data directory and restored on the next application start. When no named actions
+exist the container remains hidden. Delete the state file while the app is closed to reset all named
+actions to their configured `enabled` defaults.
 
 Service-specific integrations are documented alongside each service module. For TradingView
 automation, see the [tv-listener service notes](tv-listener.md).
@@ -141,7 +153,7 @@ automatically generate order cards via the command line:
       "bindings": [
         {
           "event": "tv-tool-horzline-ray",
-          "action": "commandLine:l distPtsPlus({price},{rayPrice}, 1) props=producingLineId:{lineId}"
+          "action": "commandLine:l distPtsPlus({price},{rayPrice}, 1)"
         },
         {
           "event": "tv-tool-horzline-remove",
@@ -170,9 +182,9 @@ Both actions subscribe to the same pair of TradingView line events:
 - On remove: runs `rm producingLineId:<lineId>` to cancel the level-order card tied to that line.
 
 **TV OC** — plain order card creation (no symbol context, price-distance sizing):
-- On draw: runs `l <distPtsPlus> props=producingLineId:<lineId>`.
-  - Passes the price distance (line-to-ray, +1 pt) as the first positional argument to the `l` command.
-  - Attaches the line ID for later removal.
+- On draw: runs `l <distPtsPlus>`.
+  - Passes the price distance (line-to-ray, +1 pt) as the first positional argument (`sl`); TP is omitted and calculated automatically from that stop distance.
+  - The `l` command automatically attaches the latest horizontal line ID as `producingLineId`; it does not accept `props=`.
 - On remove: same `rm` cleanup as TV LO.
 
 Both actions appear as independent toggles in the toolbar, so either can be enabled/disabled at

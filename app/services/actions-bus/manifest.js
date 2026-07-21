@@ -1,3 +1,4 @@
+const fs = require('fs');
 const path = require('path');
 const settings = require('../settings');
 const loadConfig = require('../../config/load');
@@ -24,15 +25,53 @@ function initService(servicesApi = {}) {
     cfg = {};
   }
 
+  let stateFile = null;
+  const savedStates = Object.create(null);
+  try {
+    const electronApp = require('electron')?.app;
+    if (electronApp && typeof electronApp.getPath === 'function') {
+      stateFile = path.join(electronApp.getPath('userData'), 'actions-bus-state.json');
+      if (fs.existsSync(stateFile)) {
+        const parsed = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          for (const [name, enabledState] of Object.entries(parsed)) {
+            if (typeof enabledState === 'boolean') savedStates[name] = enabledState;
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[actions-bus] cannot load toggle state:', err.message || err);
+  }
+
+  function saveActionState(name, enabledState) {
+    if (!stateFile) return;
+    savedStates[name] = !!enabledState;
+    try {
+      fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+      fs.writeFileSync(stateFile, JSON.stringify(savedStates, null, 2));
+    } catch (err) {
+      console.error('[actions-bus] cannot save toggle state:', err.message || err);
+    }
+  }
+
   const bus = servicesApi.actionBus && typeof servicesApi.actionBus.emit === 'function'
     ? servicesApi.actionBus
     : createActionsBus({
+        instrumentInfo: servicesApi.instrumentInfo,
+        initialActionStates: savedStates,
+        onActionStateChange: saveActionState,
         onError(err, entry) {
           console.error('[actions-bus]', err.message || err, entry?.event || entry);
         }
       });
 
   servicesApi.actionBus = bus;
+
+  if (servicesApi.instrumentInfo && typeof servicesApi.instrumentInfo.on === 'function' && !bus.__instrumentInfoBridge) {
+    bus.__instrumentInfoBridge = true;
+    servicesApi.instrumentInfo.on('updated', snapshot => bus.emit('instrument-info:updated', snapshot));
+  }
 
   const enabled = cfg.enabled !== false;
   if (enabled && Array.isArray(cfg.actions)) {

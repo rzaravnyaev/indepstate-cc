@@ -1,7 +1,7 @@
 const assert = require('assert');
 const { createActionsBus } = require('../app/services/actions-bus');
 
-function run() {
+async function run() {
   const executed = [];
   const errors = [];
   const bus = createActionsBus({
@@ -152,12 +152,69 @@ function run() {
   assert.strictEqual(bus.unregisterActionFunction('joinSymbolLevel'), true);
   assert.ok(!bus.listActionFunctions().includes('joinSymbolLevel'));
 
+  let warm = false;
+  let lookups = 0;
+  const asyncExecuted = [];
+  const asyncBus = createActionsBus({
+    instrumentInfo: {
+      peek() { return warm ? { metadata: { tickSize: 0.5 } } : null; },
+      async get() { lookups += 1; warm = true; return { metadata: { tickSize: 0.5 } }; },
+      toPoints(_context, delta) { return Math.round(Number(delta) / 0.5); }
+    }
+  });
+  asyncBus.setCommandRunner(cmd => asyncExecuted.push(cmd));
+  asyncBus.configure([
+    { event: 'cold', action: 'first distPts({price},{rayPrice})' },
+    { event: 'cold', action: 'second {symbol}' }
+  ]);
+  asyncBus.emit('cold', { symbol: 'AAA', price: 11, rayPrice: 10 });
+  assert.deepStrictEqual(asyncExecuted, []);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.strictEqual(lookups, 1);
+  assert.deepStrictEqual(asyncExecuted, ['first 2', 'second AAA']);
+  asyncBus.emit('cold', { symbol: 'AAA', price: 10.1, rayPrice: 10 });
+  assert.deepStrictEqual(asyncExecuted.slice(-2), ['first 0', 'second AAA']);
+
+  const defaultStateExecuted = [];
+  const persistedStates = {};
+  const defaultStateBus = createActionsBus({
+    initialActionStates: { Restored: true },
+    onActionStateChange(name, enabled) {
+      persistedStates[name] = enabled;
+    }
+  });
+  defaultStateBus.setCommandRunner(cmd => defaultStateExecuted.push(cmd));
+  defaultStateBus.configure([
+    { name: 'Disabled by config', enabled: false, event: 'disabled', action: 'disabled' },
+    {
+      name: 'Restored',
+      enabled: false,
+      bindings: [{ event: 'restored', action: 'restored' }]
+    }
+  ]);
+  assert.deepStrictEqual(defaultStateBus.listNamedActions(), [
+    { name: 'Disabled by config', label: 'Disabled by config', enabled: false },
+    { name: 'Restored', label: 'Restored', enabled: true }
+  ]);
+  defaultStateBus.emit('disabled');
+  defaultStateBus.emit('restored');
+  assert.deepStrictEqual(defaultStateExecuted, ['restored']);
+
+  defaultStateBus.setActionEnabled('Disabled by config', true);
+  assert.deepStrictEqual(persistedStates, { 'Disabled by config': true });
+  defaultStateBus.emit('disabled');
+  assert.deepStrictEqual(defaultStateExecuted, ['restored', 'disabled']);
+
+  const restartedBus = createActionsBus({ initialActionStates: persistedStates });
+  restartedBus.configure([
+    { name: 'Disabled by config', enabled: false, event: 'disabled', action: 'disabled' }
+  ]);
+  assert.strictEqual(restartedBus.getActionState('Disabled by config'), true);
+
   console.log('actionsBus tests passed');
 }
 
-try {
-  run();
-} catch (err) {
+run().catch(err => {
   console.error(err);
   process.exit(1);
-}
+});

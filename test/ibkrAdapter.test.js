@@ -170,6 +170,13 @@ function ready(adapter, client, nextId = 100) {
     assert.strictEqual(validateContract('MSFT', { conId: 123 }), '');
   }
 
+  {
+    const { adapter } = makeAdapter();
+    const metadata = await adapter.getInstrumentMetadata('AAPL');
+    assert.strictEqual(metadata.tickSize, 0.01);
+    assert.strictEqual(metadata.sources.tickSize, 'ibkr-config');
+  }
+
 
 
   {

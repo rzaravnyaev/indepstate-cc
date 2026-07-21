@@ -5,7 +5,7 @@ const loadConfig = require('./config/load');
 const servicesApi = require('./services/servicesApi');
 const tradeRules = servicesApi.tradeRules || require('./services/tradeRules');
 const {detectInstrumentType} = require("./services/instruments");
-const {resolveTickSize} = require('./services/points');
+const {findTickSizeOverride, getDefaultTickSize} = require('./services/points');
 const orderCalc = servicesApi.orderCalculator || require('./services/orderCalculator');
 const { resolveLevelOrderDefaults, normalizePriceSource, resolveQuotePrice } = require('./services/levelOrder/strategy');
 const orderCardsCfg = loadConfig('../services/orderCards/config/order-cards.json');
@@ -134,7 +134,30 @@ const instantExecutedKeys = new Set();
 const userTouchedByTicker = new Map(); // ticker -> boolean
 
 // котировки по тикерам
-const instrumentInfo = new Map(); // ticker -> {price,bid,ask}
+const instrumentInfo = new Map(); // provider:symbol -> flattened instrument snapshot for UI use
+function instrumentInfoKey(ticker, provider) {
+  return `${String(provider || '').trim().toLowerCase()}:${String(ticker || '').trim().toUpperCase()}`;
+}
+function instrumentInfoFor(ticker, rowOrProvider) {
+  const provider = typeof rowOrProvider === 'object' ? rowOrProvider?.provider : rowOrProvider;
+  const inferredProvider = provider || state.rows.find(row => row.ticker === ticker)?.provider;
+  return instrumentInfo.get(instrumentInfoKey(ticker, inferredProvider)) || instrumentInfo.get(ticker);
+}
+function flattenInstrumentSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object') return null;
+  if (!snapshot.quote && !snapshot.metadata) return { ...snapshot, snapshot };
+  return {
+    ...(snapshot.quote || {}),
+    ...(snapshot.metadata || {}),
+    provider: snapshot.provider,
+    symbol: snapshot.symbol,
+    instrumentType: snapshot.instrumentType,
+    sources: snapshot.sources || {},
+    quoteUpdatedAt: snapshot.quoteUpdatedAt,
+    metadataUpdatedAt: snapshot.metadataUpdatedAt,
+    snapshot
+  };
+}
 // історія спредів у пунктах: ticker -> number[] (trim до 100)
 const spreadHistory = new Map();
 
@@ -149,6 +172,7 @@ const $settingsSections = document.getElementById('settings-sections');
 const $settingsFields = document.getElementById('settings-fields');
 const $settingsClose = document.getElementById('settings-close');
 const settingsForms = new Map();
+const DESCRIPTOR_META_KEYS = new Set(['description', 'type', 'item', 'default', 'enum']);
 
 loadRendererHooks();
 
@@ -486,9 +510,9 @@ function showSection(name) {
         ...Object.keys(descObj || {})
       ]);
       for (const key of keys) {
-        if (key === 'description') continue;
-        if (key === 'type' && descObj && typeof descObj.type === 'string') continue;
         const hasValue = cfgObj && hasOwn.call(cfgObj, key);
+        if (String(key).startsWith('__')) continue;
+        if (!hasValue && DESCRIPTOR_META_KEYS.has(key)) continue;
         const val = hasValue ? cfgObj[key] : undefined;
         const d = descObj ? descObj[key] : undefined;
         const defaultVal = getDefault(d);
@@ -1039,24 +1063,25 @@ const pendingOptionValuations = new Set();
 function ensureInstrument(ticker, provider) {
   if (!ticker) return;
   if (!state.rows.some(r => r.ticker === ticker && r.provider === provider)) return; // card removed
-  if (instrumentInfo.has(ticker)) return; // already have data
-  if (pendingInstruments.has(ticker)) return; // request in-flight
-  pendingInstruments.add(ticker);
+  const infoKey = instrumentInfoKey(ticker, provider);
+  if (instrumentInfo.has(infoKey)) return; // already have data
+  if (pendingInstruments.has(infoKey)) return; // request in-flight
+  pendingInstruments.add(infoKey);
   ipcRenderer.invoke('instrument:get', {symbol: ticker, provider}).then(info => {
     if (info) {
-      pendingInstruments.delete(ticker);
-      instrumentInfo.set(ticker, info);
+      pendingInstruments.delete(infoKey);
+      instrumentInfo.set(infoKey, flattenInstrumentSnapshot(info));
       updateSpreadForTicker(ticker);
       render();
     } else {
       setTimeout(() => {
-        pendingInstruments.delete(ticker);
+        pendingInstruments.delete(infoKey);
         ensureInstrument(ticker, provider);
       }, 1000);
     }
   }).catch(() => {
     setTimeout(() => {
-      pendingInstruments.delete(ticker);
+      pendingInstruments.delete(infoKey);
       ensureInstrument(ticker, provider);
     }, 1000);
   });
@@ -1065,8 +1090,9 @@ function ensureInstrument(ticker, provider) {
 function forgetInstrument(ticker, provider) {
   if (!ticker) return;
   if (state.rows.some(r => r.ticker === ticker && r.provider === provider)) return;
-  instrumentInfo.delete(ticker);
-  pendingInstruments.delete(ticker);
+  const infoKey = instrumentInfoKey(ticker, provider);
+  instrumentInfo.delete(infoKey);
+  pendingInstruments.delete(infoKey);
   ipcRenderer.invoke('instrument:forget', {symbol: ticker, provider}).catch(() => {
   });
 }
@@ -1149,29 +1175,31 @@ function refreshOptionValuation(key, orderInfo) {
     if (running) return;
     running = true;
     try {
-      const tickers = Array.from(new Set((state.rows || []).map(r => r.ticker).filter(Boolean)));
-      if (!tickers.length) return;
+      const instruments = Array.from(new Map((state.rows || [])
+        .filter(r => r.ticker)
+        .map(r => [instrumentInfoKey(r.ticker, r.provider), { ticker: r.ticker, provider: r.provider }])).values());
+      if (!instruments.length) return;
 
-      await Promise.all(tickers.map(async (t) => {
-        const row = state.rows.find(r => r.ticker === t);
+      await Promise.all(instruments.map(async ({ ticker: t, provider }) => {
+        const row = state.rows.find(r => r.ticker === t && r.provider === provider);
         if (!row) return; // пропускаємо, якщо картки вже немає
-        const provider = row.provider;
+        const infoKey = instrumentInfoKey(t, provider);
         // не дублюємо запит, якщо вже є активний
-        if (pendingInstruments.has(t)) return;
+        if (pendingInstruments.has(infoKey)) return;
 
-        pendingInstruments.add(t);
+        pendingInstruments.add(infoKey);
         try {
           const info = await ipcRenderer.invoke('instrument:get', {symbol: t, provider});
           if (info) {
-            const prev = instrumentInfo.get(t);
-            instrumentInfo.set(t, info);
+            const prev = instrumentInfo.get(infoKey);
+            instrumentInfo.set(infoKey, flattenInstrumentSnapshot(info));
             updateSpreadForTicker(t);
             revalidateCardsForTicker(t);
           }
         } catch {
           // ігноруємо помилку; наступна ітерація спробує знову
         } finally {
-          pendingInstruments.delete(t);
+          pendingInstruments.delete(infoKey);
         }
       }));
     } finally {
@@ -1293,7 +1321,7 @@ function createCard(row, index) {
     $bidask.title = 'Bid / Ask';
     $bidask.style.fontSize = '11px';
     $bidask.style.color = '#6b7280';
-    $bidask.textContent = formatBidAskText(instrumentInfo.get(row.ticker), row) || '';
+    $bidask.textContent = formatBidAskText(instrumentInfoFor(row.ticker, row), row) || '';
     left.appendChild($bidask);
   }
   head.appendChild(left);
@@ -1484,7 +1512,7 @@ function createLevelOrderBody(row, key, $pointSize) {
       const maxLot = _normNum($maxLot.value);
       const takeProfitPts = _normNum($tp.value);
       const pointSize = _normNum($pointSize?.value);
-      const info = instrumentInfo.get(row.ticker);
+      const info = instrumentInfoFor(row.ticker, row);
       const bid = Number(info?.bid);
       const ask = Number(info?.ask);
       const buyPriceSource = normalizePriceSource(defaults.buyPriceSource, 'bid');
@@ -1746,11 +1774,11 @@ function createCryptoBody(row, key) {
 
     if (isPos(r) && isSL(sl) && Number.isFinite(tick) && tick > 0) {
       const q = orderCalc.qty({riskUsd: r, stopPts: sl, tickSize: tick, lot, instrumentType: 'CX'});
-      console.log('[UI][SIZE]', { ticker: row.ticker, riskUsd: r, stopPts: sl, tickSize: tick, quoteTickSize: instrumentInfo.get(row.ticker)?.tickSize, rowTickSize: row.tickSize, qty: q });
+      console.log('[UI][SIZE]', { ticker: row.ticker, riskUsd: r, stopPts: sl, tickSize: tick, quoteTickSize: instrumentInfoFor(row.ticker, row)?.tickSize, rowTickSize: row.tickSize, qty: q });
       $qty.value = String(q);
     }
     if (isPos(r) && isSL(sl) && (!Number.isFinite(tick) || tick <= 0)) {
-      console.log('[UI][SIZE]', { ticker: row.ticker, riskUsd: r, stopPts: sl, tickSize: tick, quoteTickSize: instrumentInfo.get(row.ticker)?.tickSize, rowTickSize: row.tickSize, qty: null, state: 'tick-loading' });
+      console.log('[UI][SIZE]', { ticker: row.ticker, riskUsd: r, stopPts: sl, tickSize: tick, quoteTickSize: instrumentInfoFor(row.ticker, row)?.tickSize, rowTickSize: row.tickSize, qty: null, state: 'tick-loading' });
       $qty.value = '';
     }
     persist();
@@ -1771,7 +1799,7 @@ function createCryptoBody(row, key) {
       const risk = _normNum($risk.value);
       const sl = priceToPoints($sl, pr, row, commit);
       const tpVal = priceToPoints($tp, pr, row, commit);
-      const info = instrumentInfo.get(row.ticker);
+      const info = instrumentInfoFor(row.ticker, row);
       const instrumentType = row.instrumentType || detectInstrumentType(row.ticker);
       const qtyOk = isPos(qty);
       const priceOk = isPos(pr);
@@ -1951,7 +1979,7 @@ function createFxBody(row, key) {
       const sl = priceToPoints($sl, pr, row, commit);
       const tpVal = priceToPoints($tp, pr, row, commit);
       const risk = _normNum($risk.value);
-      const info = instrumentInfo.get(row.ticker);
+      const info = instrumentInfoFor(row.ticker, row);
       const instrumentType = row.instrumentType || 'FX';
 
       const qtyOk = Number.isFinite(qtyRaw) && qtyRaw > 0;
@@ -2137,7 +2165,7 @@ function createEquitiesBody(row, key) {
       const sl = priceToPoints($sl, pr, row, commit);
       const tpVal = priceToPoints($tp, pr, row, commit);
       const risk = _normNum($risk.value);
-      const info = instrumentInfo.get(row.ticker);
+      const info = instrumentInfoFor(row.ticker, row);
       const instrumentType = row.instrumentType || detectInstrumentType(row.ticker);
 
       const qtyOk = Number.isFinite(qtyRaw) && qtyRaw >= 1 && Math.floor(qtyRaw) === qtyRaw;
@@ -2261,13 +2289,15 @@ function createEquitiesBody(row, key) {
 
 
 function tickSize(row) {
-  const info = instrumentInfo.get(row.ticker);
-  return resolveTickSize({
-    symbol: row.ticker,
-    explicitTickSize: row?.tickSize,
-    quoteTickSize: info?.tickSize,
-    quoteTickSource: info?.tickSource
-  });
+  const explicit = Number(row?.tickSize);
+  if (Number.isFinite(explicit) && explicit > 0) return explicit;
+  const info = instrumentInfoFor(row.ticker, row);
+  const cached = Number(info?.tickSize);
+  if (Number.isFinite(cached) && cached > 0 && String(info?.sources?.tickSize || '').startsWith('adapter:')) return cached;
+  const configured = Number(findTickSizeOverride(row.ticker));
+  if (Number.isFinite(configured) && configured > 0) return configured;
+  if (Number.isFinite(cached) && cached > 0) return cached;
+  return getDefaultTickSize();
 }
 
 function decimalsFromTick(tick) {
@@ -2330,7 +2360,7 @@ function calcAvg(arr, n) {
 }
 
 function formatSpreadTriple(ticker, row, curPtsOverride) {
-  const info = instrumentInfo.get(ticker);
+  const info = instrumentInfoFor(ticker, row);
   const cur = Number.isFinite(curPtsOverride) ? curPtsOverride : computeSpreadPts(info, row);
   if (!Number.isFinite(cur)) return '';
   const hist = spreadHistory.get(ticker) || [];
@@ -2341,7 +2371,7 @@ function formatSpreadTriple(ticker, row, curPtsOverride) {
 
 function updateSpreadForTicker(ticker) {
   if (!ticker) return;
-  const info = instrumentInfo.get(ticker);
+  const info = instrumentInfoFor(ticker);
   const row = state.rows.find(r => r.ticker === ticker);
   if (!row) return;
 
@@ -3253,6 +3283,7 @@ function saveAndCloseSettingsPanel() {
       for (const inp of form.querySelectorAll('input')) {
         const k = inp.dataset.field;
         if (!k) continue;
+        if (k.split('.').some(part => part.startsWith('__'))) continue;
         let val;
         if (inp.dataset.arrayMarker === '1') val = [];
         else if (inp.type === 'checkbox') val = inp.checked;

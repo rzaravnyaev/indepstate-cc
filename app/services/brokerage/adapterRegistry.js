@@ -77,6 +77,11 @@ function getAdapter(name){
   const provCfg = resolveSecrets((cfg.providers && cfg.providers[n]) || {});
   const inst = buildAdapter(n, provCfg);
   instances.set(n, inst);
+  if (typeof inst.preloadInstrumentMetadata === 'function') {
+    Promise.resolve()
+      .then(() => inst.preloadInstrumentMetadata())
+      .catch(err => console.error('[adapterRegistry] instrument metadata preload failed:', n, err?.message || err));
+  }
   return inst;
 }
 

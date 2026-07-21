@@ -125,8 +125,7 @@
           },
           "profileBySymbol": {
             "description": "Contract resolution profile per symbol",
-            "__allowUnknown": true,
-            "ALNY": { "type": "string", "description": "Profile for ALNY" }
+            "__allowUnknown": true
           },
           "defaultProfile": {
             "type": "string",

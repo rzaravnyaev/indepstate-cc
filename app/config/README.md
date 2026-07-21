@@ -118,7 +118,10 @@ a built‑in helper function:
     "dealPriceRule": "KNOWN_EXTREMUM",
     "stoppLossRule": "B1_TAIL"
   },
-  "falseBreak": { "tickSize": 0.01 }
+  "falseBreak": { "tickSize": 0.01 },
+  "limitByCurrent": {
+    "stoppLossRule": "B1_TAIL"
+  }
 }
 ```
 
@@ -130,9 +133,31 @@ Built-in helper functions:
   shorts) from the observed bars as the target price.
 - `B1_TAIL` – uses the opposite-direction extremum of the bar that pierced the
   level as the stop price.
+- `LEVEL_OFFSET` – anchors the stop beyond the card level using the normalized
+  order-card `SL` value as an extra offset in points. For longs the stop is
+  `level - SL * tickSize`; for shorts it is `level + SL * tickSize`. The final
+  risk distance is measured from the strategy's actual entry to that stop.
 - `B1_10p_GAP` – sets the limit price at the entry level plus 10% of the
   breakout bar's range (at least 0.01) and an extra 0.02 for longs (subtracts
   for shorts).
+
+`LEVEL_OFFSET` is opt-in for the `consolidation` (`BC`/`SC`) and
+`limitByCurrent` (`BP`/`SP`) strategies:
+
+```json
+{
+  "consolidation": {
+    "stoppLossRule": "LEVEL_OFFSET"
+  },
+  "limitByCurrent": {
+    "stoppLossRule": "LEVEL_OFFSET"
+  }
+}
+```
+
+With this rule selected, `SL` remains a normal stop distance for direct
+`BL`/`SL` orders, but pending buttons use it as the extra offset beyond the
+watched card level.
 
 Override this file in `config/pending-strategies.json` to customize the defaults.
 

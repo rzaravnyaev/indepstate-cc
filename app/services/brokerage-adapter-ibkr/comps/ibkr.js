@@ -1065,6 +1065,24 @@ class IBKRAdapter extends ExecutionAdapter {
     return buildOrderRequests(order, contract, this.cfg, () => this.allocateOrderId());
   }
 
+  async getInstrumentMetadata(symbol) {
+    const key = normalizeString(symbol).toUpperCase();
+    try {
+      const record = await this.resolveContractRecordForSymbol(key);
+      return {
+        tickSize: record.tickSize || positiveNumber(this.cfg.defaultTickSize),
+        contractSize: positiveNumber(record.contract?.multiplier),
+        sources: {
+          tickSize: record.source === 'static' ? 'ibkr-config' : 'ibkr-contract-details',
+          contractSize: record.source === 'static' ? 'ibkr-config' : 'ibkr-contract-details'
+        }
+      };
+    } catch (err) {
+      this.#log('error', 'instrument metadata unavailable', { provider: this.provider, symbol: key, reason: err.message });
+      return null;
+    }
+  }
+
   async getQuote(symbol) {
     const key = normalizeString(symbol).toUpperCase();
     const reason = this.readinessReason();

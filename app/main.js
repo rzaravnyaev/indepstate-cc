@@ -16,7 +16,6 @@ const { createPendingOrderHub } = require('./services/pendingOrders');
 const tradeRules = servicesApi.tradeRules || require('./services/tradeRules');
 const loadConfig = require('./config/load');
 const orderCalc = servicesApi.orderCalculator || require('./services/orderCalculator');
-const { resolveTickSize } = require('./services/points');
 const { calculateLimitBidTradePlan } = require('./services/levelOrder/strategy');
 const { collectRetryStopEntries, getRetryStopParentIds } = require('./services/levelOrder/retryStop');
 const { normalizeOrderQty, isValidOrderQty } = require('./services/executionQuantity');
@@ -45,6 +44,7 @@ function loadServices(servicesApi = {}) {
 
 loadServices(servicesApi);
 const { getAdapter, resolveProvider } = servicesApi.brokerage || {};
+const instrumentInfo = servicesApi.instrumentInfo;
 
 function envBool(name, fallback = false) {
   const v = process.env[name];
@@ -876,7 +876,13 @@ function setupIpc(orderSvc) {
       wireAdapter(adapter, providerName);
 
       const isOptionBlock = execOrder.instrumentType === 'OPT';
-      const quote = isOptionBlock ? { price: 1, tickSize: 0.01 } : normalizeQuoteForValidation(await adapter.getQuote?.(execOrder.symbol));
+      const instrumentSnapshot = await instrumentInfo.get({
+        provider: providerName,
+        symbol: execOrder.symbol,
+        instrumentType: execOrder.instrumentType,
+        payload: execOrder
+      }, { forceQuote: true });
+      const quote = normalizeQuoteForValidation(instrumentSnapshot?.quote);
       if (!isOptionBlock && (!quote || !Number.isFinite(quote.price))) {
         const rej = { status: 'rejected', provider: providerName, reason: 'No quote' };
         appendJsonl(EXEC_LOG, { t: ts, kind: 'place', valid: true, reqId, cid, provider: providerName, order: execOrder, result: rej });
@@ -887,12 +893,17 @@ function setupIpc(orderSvc) {
       const stopPts = Number(execOrder.sl);
       const isFixedQty = order?.meta?.fixedQty === true;
       const isRiskBased = !isFixedQty && Number.isFinite(riskUsd) && riskUsd > 0 && Number.isFinite(stopPts) && stopPts > 0;
-      const effectiveTickSize = resolveTickSize({
+      const tickResolution = instrumentInfo.getTickSizeResolution({
+        provider: providerName,
         symbol: execOrder.symbol,
-        explicitTickSize: execOrder.tickSize,
-        quoteTickSize: quote?.tickSize,
-        quoteTickSource: quote?.tickSource
-      });
+        instrumentType: execOrder.instrumentType,
+        payload: execOrder
+      }, { explicitTickSize: execOrder.tickSize });
+      const effectiveTickSize = tickResolution.tickSize;
+      const metadataQuantityStep = Number(instrumentSnapshot?.metadata?.quantityStep);
+      if (Number.isFinite(metadataQuantityStep) && metadataQuantityStep > 0) {
+        execOrder.meta = { ...(execOrder.meta || {}), quantityStep: execOrder.meta?.quantityStep || metadataQuantityStep };
+      }
 
       if (!isOptionBlock && Number.isFinite(effectiveTickSize) && effectiveTickSize > 0) {
         execOrder.tickSize = effectiveTickSize;
@@ -902,7 +913,8 @@ function setupIpc(orderSvc) {
             stopPts,
             tickSize: effectiveTickSize,
             lot: execOrder.lot || order.lot || 1,
-            instrumentType: execOrder.instrumentType
+            instrumentType: execOrder.instrumentType,
+            quantityStep: execOrder.meta?.quantityStep
           });
         }
       } else if (!isOptionBlock && isRiskBased) {
@@ -916,7 +928,7 @@ function setupIpc(orderSvc) {
         execOrder.meta.stopPts = stopPts;
       }
 
-      console.log('[EXEC][SIZE]', { symbol: execOrder.symbol, price: execOrder.price, riskUsd, stopPts, tickSize: execOrder.tickSize, lot: execOrder.lot, qty: execOrder.qty, tickSource: quote?.tickSource || (Number(execOrder.tickSize) > 0 ? 'payload/config' : 'adapter-pending') });
+      console.log('[EXEC][SIZE]', { symbol: execOrder.symbol, price: execOrder.price, riskUsd, stopPts, tickSize: execOrder.tickSize, lot: execOrder.lot, qty: execOrder.qty, tickSource: tickResolution.source });
 
       if (!isOptionBlock) {
         const rule = tradeRules.validate(execOrder, quote);
@@ -1044,7 +1056,8 @@ function setupIpc(orderSvc) {
     ipcMain,
     queuePlaceOrder: queuePlaceOrderInternal,
     wireAdapter,
-    mainWindow
+    mainWindow,
+    instrumentInfo
   });
 
   ipcMain.handle('level-order:place', async (_evt, payload = {}) => {
@@ -1057,15 +1070,14 @@ function setupIpc(orderSvc) {
     try {
       const adapter = getAdapter(providerName);
       wireAdapter(adapter, providerName);
-      const quote = await adapter.getQuote?.(symbol);
+      const instrumentSnapshot = await instrumentInfo.get({ provider: providerName, symbol, instrumentType, payload }, { forceQuote: true });
+      const quote = instrumentSnapshot?.quote;
       const bid = Number(quote?.bid);
       const ask = Number(quote?.ask);
-      const tickSize = resolveTickSize({
-        symbol,
-        explicitTickSize: payload.tickSize,
-        quoteTickSize: quote?.tickSize,
-        quoteTickSource: quote?.tickSource
-      });
+      const tickSize = instrumentInfo.resolveTickSize(
+        { provider: providerName, symbol, instrumentType, payload },
+        { explicitTickSize: payload.tickSize }
+      );
       const plan = calculateLimitBidTradePlan({
         action: payload.action,
         ticker: symbol,
@@ -1074,7 +1086,7 @@ function setupIpc(orderSvc) {
         riskUsd: payload.riskUsd,
         stopOffsetPts: payload.stopOffsetPts,
         maxLot: payload.maxLot,
-        minLot: payload.minLot,
+        minLot: payload.minLot ?? instrumentSnapshot?.metadata?.quantityStep,
         takeProfitPts: payload.takeProfitPts,
         bid,
         ask,
@@ -1274,9 +1286,7 @@ function setupIpc(orderSvc) {
       const provider = typeof arg === 'object' ? arg.provider : undefined;
       const instrumentType = detectInstrumentType(String(symbol || ''));
       const providerName = resolveProviderName({ provider, payload: typeof arg === 'object' ? arg : {}, symbol, instrumentType });
-      const adapter = getAdapter(providerName);
-      const q = await adapter.getQuote?.(String(symbol || ''));
-      return q || null;
+      return await instrumentInfo.get({ provider: providerName, symbol, instrumentType, payload: typeof arg === 'object' ? arg : {} });
     } catch {
       return null;
     }
@@ -1288,9 +1298,7 @@ function setupIpc(orderSvc) {
       const provider = typeof arg === 'object' ? arg.provider : undefined;
       const instrumentType = detectInstrumentType(String(symbol || ''));
       const providerName = resolveProviderName({ provider, payload: typeof arg === 'object' ? arg : {}, symbol, instrumentType });
-      const adapter = getAdapter(providerName);
-      await adapter.forgetQuote?.(String(symbol || ''));
-      return true;
+      return await instrumentInfo.forget({ provider: providerName, symbol, instrumentType, payload: typeof arg === 'object' ? arg : {} });
     } catch {
       return false;
     }
