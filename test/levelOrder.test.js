@@ -61,7 +61,7 @@ const orderCalculator = {
 
 (function testDefaults() {
   const cfg = {
-    defaults: { riskUsd: 50, maxLot: 0, minLot: 1, stopOffsetPts: 10, takeProfitPts: null, buyPriceSource: 'ask', sellPriceSource: 'bid' },
+    defaults: { riskUsd: 50, maxLot: 0, minLot: 1, stopOffsetPts: 10, takeProfitPts: null, buyPriceSource: 'bid', sellPriceSource: 'bid' },
     symbols: [{ ticker: 'SPX.cfd', riskUsd: 100, maxLot: 3, minLot: 0.01, stopOffsetPts: 5, takeProfitPts: 30, buyPriceSource: 'mid', sellPriceSource: 'ask' }]
   };
   assert.deepStrictEqual(resolveLevelOrderDefaults(cfg, 'SPX.cfd'), {
@@ -79,7 +79,7 @@ const orderCalculator = {
     minLot: 1,
     stopOffsetPts: 10,
     takeProfitPts: null,
-    buyPriceSource: 'ask',
+    buyPriceSource: 'bid',
     sellPriceSource: 'bid'
   });
   assert.deepStrictEqual(resolveLevelOrderDefaults({
@@ -91,7 +91,7 @@ const orderCalculator = {
     minLot: 1,
     stopOffsetPts: null,
     takeProfitPts: null,
-    buyPriceSource: 'ask',
+    buyPriceSource: 'bid',
     sellPriceSource: 'mid'
   });
 })();
@@ -189,7 +189,7 @@ const orderCalculator = {
     action: 'LB',
     ticker: 'TST',
     instrumentType: 'EQ',
-    level: 100,
+    level: 98,
     riskUsd: 100,
     stopOffsetPts: 1,
     maxLot: 0,
@@ -200,8 +200,8 @@ const orderCalculator = {
     orderCalculator
   });
   assert.strictEqual(fallback.ok, true);
-  assert.strictEqual(fallback.priceSource, 'ask');
-  assert.strictEqual(fallback.referencePrice, 101);
+  assert.strictEqual(fallback.priceSource, 'bid');
+  assert.strictEqual(fallback.referencePrice, 99);
 })();
 
 (function testSplitRemainder() {

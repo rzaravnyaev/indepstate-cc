@@ -41,7 +41,7 @@ Config shape:
     "minLot": 1,
     "stopOffsetPts": 10,
     "takeProfitPts": null,
-    "buyPriceSource": "ask",
+    "buyPriceSource": "bid",
     "sellPriceSource": "bid"
   },
   "symbols": []
@@ -53,8 +53,8 @@ Config shape:
 - `minLot`: minimum quantity step for sizing and split remainders. `1` keeps whole-number sizing; `0.01` allows quantities like `12.34`.
 - `stopOffsetPts`: stop offset from the level, in points.
 - `takeProfitPts`: optional take-profit distance in points. `null` or blank means no TP is sent.
-- `buyPriceSource`: quote side used by `LB` / `BL`; one of `bid`, `ask`, or `mid`. Default is `ask`.
-- `sellPriceSource`: quote side used by `LS` / `SL`; one of `bid`, `ask`, or `mid`. Default is `bid`.
+- `buyPriceSource`: quote side used by `LB`; one of `bid`, `ask`, or `mid`. Default is `bid`.
+- `sellPriceSource`: quote side used by `LS`; one of `bid`, `ask`, or `mid`. Default is `bid`.
 - `symbols`: ticker-specific overrides with the same fields plus `ticker`.
 
 `mid` is calculated as `(bid + ask) / 2` and requires both quote sides.
@@ -71,7 +71,7 @@ Example:
       "minLot": 0.01,
       "stopOffsetPts": 4,
       "takeProfitPts": null,
-      "buyPriceSource": "ask",
+      "buyPriceSource": "bid",
       "sellPriceSource": "bid"
     }
   ]
@@ -93,7 +93,7 @@ A level-order card shows:
 
 Buttons:
 
-- `LB`: limit buy at the configured buy price source. Default: current ask.
+- `LB`: limit buy at the configured buy price source. Default: current bid.
 - `LS`: limit sell at the configured sell price source. Default: current bid.
 
 ## Execution

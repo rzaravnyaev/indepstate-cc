@@ -55,7 +55,7 @@ async function run() {
   const t = renderer.__testing;
   await new Promise(resolve => setTimeout(resolve, 0));
   t.setLevelOrderConfig({
-    defaults: { riskUsd: 50, maxLot: 3, stopOffsetPts: 4, takeProfitPts: 12, buyPriceSource: 'ask', sellPriceSource: 'bid' },
+    defaults: { riskUsd: 50, maxLot: 3, stopOffsetPts: 4, takeProfitPts: 12, buyPriceSource: 'bid', sellPriceSource: 'bid' },
     symbols: [{ ticker: 'TSTMID', buyPriceSource: 'mid', sellPriceSource: 'bid' }]
   });
 
@@ -66,7 +66,7 @@ async function run() {
   let buttons = Array.from(card.querySelectorAll('button.btn'));
   assert.deepStrictEqual(buttons.map(b => b.dataset.kind), ['LB', 'LS']);
   assert.strictEqual(buttons[0].disabled, true);
-  assert.strictEqual(card.querySelector('.card__note').textContent, 'Ask quote required');
+  assert.strictEqual(card.querySelector('.card__note').textContent, 'Bid quote required');
 
   t.instrumentInfo.set('TST', { bid: 101, ask: 102, price: 101.5, tickSize: 0.5 });
   t.render();
@@ -92,7 +92,7 @@ async function run() {
   assert.strictEqual(call.payload.maxLot, 3);
   assert.strictEqual(call.payload.minLot, 1);
   assert.strictEqual(call.payload.takeProfitPts, 12);
-  assert.strictEqual(call.payload.buyPriceSource, 'ask');
+  assert.strictEqual(call.payload.buyPriceSource, 'bid');
   assert.strictEqual(call.payload.sellPriceSource, 'bid');
   assert.strictEqual(call.payload.pointSize, 0.001);
   assert.strictEqual(call.payload.tickSize, 0.001);

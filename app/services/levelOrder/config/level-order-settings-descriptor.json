@@ -28,12 +28,12 @@
       "buyPriceSource": {
         "type": "string",
         "enum": ["bid", "ask", "mid"],
-        "description": "Price source for LB/BL button"
+        "description": "Price source for LB button"
       },
       "sellPriceSource": {
         "type": "string",
         "enum": ["bid", "ask", "mid"],
-        "description": "Price source for LS/SL button"
+        "description": "Price source for LS button"
       }
     },
     "symbols": {
@@ -67,12 +67,12 @@
         "buyPriceSource": {
           "type": "string",
           "enum": ["bid", "ask", "mid"],
-          "description": "Price source for LB/BL button"
+          "description": "Price source for LB button"
         },
         "sellPriceSource": {
           "type": "string",
           "enum": ["bid", "ask", "mid"],
-          "description": "Price source for LS/SL button"
+          "description": "Price source for LS button"
         }
       }
     }

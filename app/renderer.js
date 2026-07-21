@@ -1487,7 +1487,7 @@ function createLevelOrderBody(row, key, $pointSize) {
       const info = instrumentInfo.get(row.ticker);
       const bid = Number(info?.bid);
       const ask = Number(info?.ask);
-      const buyPriceSource = normalizePriceSource(defaults.buyPriceSource, 'ask');
+      const buyPriceSource = normalizePriceSource(defaults.buyPriceSource, 'bid');
       const sellPriceSource = normalizePriceSource(defaults.sellPriceSource, 'bid');
       const sourceForAction = action => String(action || '').toUpperCase() === 'LS' ? sellPriceSource : buyPriceSource;
       const quoteForAction = action => resolveQuotePrice({ bid, ask, source: sourceForAction(action) });

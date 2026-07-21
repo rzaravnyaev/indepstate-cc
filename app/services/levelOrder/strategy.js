@@ -66,7 +66,7 @@ function resolveLevelOrderDefaults(config = {}, ticker) {
     minLot: normalizeMinLot(finiteNumber(override?.minLot, finiteNumber(defaults.minLot, 1))),
     stopOffsetPts: finiteNumber(override?.stopOffsetPts, finiteNumber(defaults.stopOffsetPts, null)),
     takeProfitPts: finiteNumber(override?.takeProfitPts, finiteNumber(defaults.takeProfitPts, null)),
-    buyPriceSource: normalizePriceSource(override?.buyPriceSource, normalizePriceSource(defaults.buyPriceSource, 'ask')),
+    buyPriceSource: normalizePriceSource(override?.buyPriceSource, normalizePriceSource(defaults.buyPriceSource, 'bid')),
     sellPriceSource: normalizePriceSource(override?.sellPriceSource, normalizePriceSource(defaults.sellPriceSource, 'bid'))
   };
 }
@@ -125,7 +125,7 @@ function calculateLimitBidTradePlan({
 
   const isBuy = sideAction === 'LB';
   const priceSource = isBuy
-    ? normalizePriceSource(buyPriceSource, 'ask')
+    ? normalizePriceSource(buyPriceSource, 'bid')
     : normalizePriceSource(sellPriceSource, 'bid');
   const quotePrice = resolveQuotePrice({ bid, ask, source: priceSource });
   if (!quotePrice.ok) return quotePrice;
