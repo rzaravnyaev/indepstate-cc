@@ -310,6 +310,45 @@ async function run() {
   card4.querySelector('.card__status').click();
   assert(calls.find(c => c.ch === 'execution:cancel-order' && c.payload.ticket === 'ticket-5'));
 
+  const closedRow = { ticker: 'CLOSED', event: 'manual', time: 20, provider: 'ibkr', instrumentType: 'EQ' };
+  handlers['orders:new'](null, closedRow);
+  const closedKey = t.rowKey(closedRow);
+  t.ticketToKey.set('ibkr-parent', closedKey);
+  handlers['position:closed'](null, { ticket: 'ibkr-parent', provider: 'ibkr', trade: { pnlStatus: 'unavailable' } });
+  assert.strictEqual(t.cardStates.get(closedKey), 'closed');
+  assert(t.cardByKey(closedKey).querySelector('.card__status').classList.contains('card__status--closed'));
+  handlers['position:closed'](null, { ticket: 'ibkr-parent', provider: 'ibkr', profit: 0, trade: { profit: 0, pnlStatus: 'reported' } });
+  assert.strictEqual(t.cardStates.get(closedKey), 'profit');
+  handlers['position:closed'](null, { ticket: 'ibkr-parent', provider: 'ibkr', profit: -1, trade: { profit: -1, pnlStatus: 'reported' } });
+  assert.strictEqual(t.cardStates.get(closedKey), 'loss');
+
+  const groupedRow = { cardType: 'levelOrder', ticker: 'GROUPPNL', event: 'levelOrder', time: 21, level: 100, provider: 'ibkr', instrumentType: 'EQ' };
+  t.instrumentInfo.set('GROUPPNL', { bid: 101, ask: 102, price: 101.5, tickSize: 0.5 });
+  handlers['orders:new'](null, groupedRow);
+  const groupedKey = t.rowKey(groupedRow);
+  const groupedId = 'grouped-pnl';
+  t.levelOrderGroups.set(groupedId, {
+    parentRequestId: groupedId,
+    key: groupedKey,
+    total: 2,
+    childReqIds: new Set(),
+    placedReqIds: new Set(),
+    openedTickets: new Set(['group-ticket-1', 'group-ticket-2']),
+    closedTickets: new Set(),
+    profitByTicket: new Map(),
+    tickets: new Set(['group-ticket-1', 'group-ticket-2'])
+  });
+  t.levelOrderTicketToGroup.set('group-ticket-1', groupedId);
+  t.levelOrderTicketToGroup.set('group-ticket-2', groupedId);
+  handlers['position:closed'](null, { ticket: 'group-ticket-1', profit: 5, trade: { profit: 5, pnlStatus: 'reported' } });
+  assert.notStrictEqual(t.cardStates.get(groupedKey), 'profit');
+  handlers['position:closed'](null, { ticket: 'group-ticket-2', trade: { pnlStatus: 'unavailable' } });
+  assert.strictEqual(t.cardStates.get(groupedKey), 'closed');
+  handlers['position:closed'](null, { ticket: 'group-ticket-2', profit: -10, trade: { profit: -10, pnlStatus: 'reported' } });
+  assert.strictEqual(t.cardStates.get(groupedKey), 'loss');
+  handlers['position:closed'](null, { ticket: 'group-ticket-1', profit: 20, trade: { profit: 20, pnlStatus: 'reported' } });
+  assert.strictEqual(t.cardStates.get(groupedKey), 'profit');
+
   Module._load = originalLoad;
   console.log('levelOrderRenderer tests passed');
 }
