@@ -99,6 +99,21 @@ function addBracket(adapter, suffix = '1') {
 
   {
     const adapter = makeAdapter();
+    const bracket = addBracket(adapter, '3');
+    bracket.status = 'ENTRY_PLACED';
+    bracket.uiConfirmed = false;
+    const closed = [];
+    adapter.events.on('position:closed', event => closed.push(event));
+
+    await adapter._onAccountUpdate({ a: { P: [{ s: 'BTCUSDT', ps: 'BOTH', pa: '0' }] } });
+
+    assert.strictEqual(closed.length, 0);
+    assert.strictEqual(bracket.status, 'ENTRY_PLACED');
+    assert.strictEqual(adapter._cancelCalls, 0);
+  }
+
+  {
+    const adapter = makeAdapter();
     const opened = [];
     const closed = [];
     let positions = [{ symbol: 'ETH/USDT:USDT', contracts: 2, unrealizedPnl: 3 }];

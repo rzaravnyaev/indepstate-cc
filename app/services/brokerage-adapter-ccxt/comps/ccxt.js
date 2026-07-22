@@ -1194,9 +1194,10 @@ class CCXTExecutionAdapter extends ExecutionAdapter {
 
   _markBracketClosed(bracket) {
     if (!bracket) return false;
+    const ticket = String(bracket.lifecycleTicket || bracket.entryOrderId || bracket.entryClientOrderId || '');
+    if (!bracket.uiConfirmed && !this._ticketOpened.has(ticket)) return false;
     bracket.status = 'CLOSED';
     bracket.updatedAt = Date.now();
-    const ticket = String(bracket.lifecycleTicket || bracket.entryOrderId || bracket.entryClientOrderId || '');
     return this._emitPositionClosed(ticket, { pnlStatus: 'unavailable' });
   }
 
@@ -2026,7 +2027,9 @@ class CCXTExecutionAdapter extends ExecutionAdapter {
 
       const set = new Set((open || []).map((x) => String(x.clientAlgoId || '')));
 
-      if (['PROTECTED','CLOSING','ENTRY_FILLED','ERROR'].includes(b.status) && positionKnown && posAmt === 0) { await this.cancelBracketProtection(b.bracketId); this._markBracketClosed(b); continue; }
+      const lifecycleTicket = String(b.lifecycleTicket || b.entryOrderId || b.entryClientOrderId || '');
+      const lifecycleOpened = b.uiConfirmed || this._ticketOpened.has(lifecycleTicket);
+      if (['PROTECTED','CLOSING','ENTRY_FILLED','ERROR'].includes(b.status) && lifecycleOpened && positionKnown && posAmt === 0) { await this.cancelBracketProtection(b.bracketId); this._markBracketClosed(b); continue; }
 
       const expectsTp = positiveFiniteNumber(b.takeProfitPrice) !== undefined;
       const expectsSl = positiveFiniteNumber(b.stopLossPrice) !== undefined;
@@ -2067,7 +2070,9 @@ class CCXTExecutionAdapter extends ExecutionAdapter {
       const symbol = String(p?.s || ''); const ps = String(p?.ps || 'BOTH'); const pa = Number(p?.pa || 0);
       if (pa !== 0) continue;
       for (const b of this._brackets.values()) {
-        if (b.symbol === symbol && b.positionSide === ps && !['CLOSED','CANCELED'].includes(b.status)) {
+        const lifecycleTicket = String(b.lifecycleTicket || b.entryOrderId || b.entryClientOrderId || '');
+        const lifecycleOpened = b.uiConfirmed || this._ticketOpened.has(lifecycleTicket);
+        if (b.symbol === symbol && b.positionSide === ps && lifecycleOpened && !['CLOSED','CANCELED'].includes(b.status)) {
           b.status = 'CLOSING'; b.updatedAt = Date.now();
           await this.cancelBracketProtection(b.bracketId);
           this._markBracketClosed(b);
