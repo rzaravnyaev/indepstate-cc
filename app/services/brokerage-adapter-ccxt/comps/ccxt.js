@@ -1007,6 +1007,10 @@ class CCXTExecutionAdapter extends ExecutionAdapter {
     this._brackets.set(bracketId, { bracketId, symbol: nativeSymbol, mappedSymbol: symbol, positionSide, direction, entryClientOrderId: ids.entryClientOrderId, tpClientAlgoId: null, slClientAlgoId: null, entryOrderId: Number(entryRes?.orderId || 0) || null, status: 'ENTRY_PLACED', expectedQty: String(qtyRounded), actualQty: null, entryPrice: String(priceRounded), takeProfitPrice: tp, stopLossPrice: sl, protectionPriceSource: source, tickSize: String(tickSize), pendingId: cid, origOrder: order, uiConfirmed: false, uiRejected: false, createdAt: now, updatedAt: now });
     this._entryClientToBracket.set(ids.entryClientOrderId, bracketId);
     this.pending.set(cid, { order, createdAt: now });
+    setImmediate(() => {
+      const bracket = this._brackets.get(bracketId);
+      if (bracket && !['CANCELED','CLOSED'].includes(bracket.status)) this._confirmBracketPending(bracket, entryRes);
+    });
     this._startBracketEntryWatcher(bracketId).catch(() => {});
     return { status: 'ok', provider: this.provider, providerOrderId: `pending:${cid}`, raw: { enqueued: true, bracketId, entry: entryRes } };
   }
@@ -1040,7 +1044,20 @@ class CCXTExecutionAdapter extends ExecutionAdapter {
       },
       origOrder: pending?.order || bracket.origOrder
     });
-    this._emitPositionOpened(ticket, { symbol: mappedSymbol, size: Number(bracket.actualQty || bracket.expectedQty || 0), bracketId: bracket.bracketId });
+  }
+
+  _markBracketOpened(bracket, entryOrder = {}) {
+    if (!bracket) return false;
+    const ticket = String(bracket.lifecycleTicket || bracket.entryOrderId || entryOrder?.orderId || bracket.entryClientOrderId || '');
+    const mappedSymbol = bracket.mappedSymbol || this.mapSymbol?.(bracket.origOrder?.symbol || bracket.symbol) || bracket.symbol;
+    bracket.lifecycleTicket = ticket;
+    bracket.mappedSymbol = mappedSymbol;
+    this._registerTrackedTicket(ticket, mappedSymbol);
+    return this._emitPositionOpened(ticket, {
+      symbol: mappedSymbol,
+      size: Number(bracket.actualQty || entryOrder?.executedQty || entryOrder?.cumQty || bracket.expectedQty || 0),
+      bracketId: bracket.bracketId
+    });
   }
 
   _rejectBracketPending(bracket, reason, raw = undefined) {
@@ -1148,9 +1165,10 @@ class CCXTExecutionAdapter extends ExecutionAdapter {
       bracket.status = 'ENTRY_FILLED';
       bracket.actualQty = String(o?.executedQty || o?.cumQty || bracket.expectedQty);
       bracket.updatedAt = Date.now();
+      this._confirmBracketPending(bracket, o);
+      this._markBracketOpened(bracket, o);
       try {
         await this._placeBracketProtection(bracket);
-        this._confirmBracketPending(bracket, o);
       } catch (error) {
         bracket.status = 'ERROR';
         bracket.lastError = error?.message || String(error);
@@ -1159,7 +1177,7 @@ class CCXTExecutionAdapter extends ExecutionAdapter {
       clearInterval(watcher.timer); this._bracketEntryWatchers.delete(bracketId);
       return;
     }
-    if (st === 'PARTIALLY_FILLED') { bracket.status = 'ENTRY_PARTIALLY_FILLED'; bracket.actualQty = String(o?.executedQty || o?.cumQty || ''); bracket.updatedAt = Date.now(); return; }
+    if (st === 'PARTIALLY_FILLED') { bracket.status = 'ENTRY_PARTIALLY_FILLED'; bracket.actualQty = String(o?.executedQty || o?.cumQty || ''); bracket.updatedAt = Date.now(); this._confirmBracketPending(bracket, o); this._markBracketOpened(bracket, o); return; }
     if (['CANCELED','REJECTED','EXPIRED'].includes(st)) { bracket.status = 'CANCELED'; bracket.updatedAt = Date.now(); this._rejectBracketPending(bracket, `Entry order finished with status ${st}`, o); clearInterval(watcher.timer); this._bracketEntryWatchers.delete(bracketId); }
   }
 
@@ -1195,7 +1213,7 @@ class CCXTExecutionAdapter extends ExecutionAdapter {
   _markBracketClosed(bracket) {
     if (!bracket) return false;
     const ticket = String(bracket.lifecycleTicket || bracket.entryOrderId || bracket.entryClientOrderId || '');
-    if (!bracket.uiConfirmed && !this._ticketOpened.has(ticket)) return false;
+    if (!this._ticketOpened.has(ticket)) return false;
     bracket.status = 'CLOSED';
     bracket.updatedAt = Date.now();
     return this._emitPositionClosed(ticket, { pnlStatus: 'unavailable' });
@@ -2004,8 +2022,8 @@ class CCXTExecutionAdapter extends ExecutionAdapter {
         try {
           const o = await this._binanceSignedRequest('GET', '/fapi/v1/order', { symbol: b.symbol, origClientOrderId: b.entryClientOrderId });
           const st = String(o?.status || '').toUpperCase();
-          if (st === 'FILLED') { b.status = 'ENTRY_FILLED'; b.actualQty = String(o?.executedQty || o?.cumQty || b.expectedQty); try { await this._placeBracketProtection(b); this._confirmBracketPending(b, o); } catch (error) { b.status = 'ERROR'; b.lastError = error?.message || String(error); this._rejectBracketPending(b, `Entry filled but protection failed: ${b.lastError}`, error); } }
-          else if (st === 'PARTIALLY_FILLED') { b.status = 'ENTRY_PARTIALLY_FILLED'; b.actualQty = String(o?.executedQty || o?.cumQty || ''); }
+          if (st === 'FILLED') { b.status = 'ENTRY_FILLED'; b.actualQty = String(o?.executedQty || o?.cumQty || b.expectedQty); this._confirmBracketPending(b, o); this._markBracketOpened(b, o); try { await this._placeBracketProtection(b); } catch (error) { b.status = 'ERROR'; b.lastError = error?.message || String(error); this._rejectBracketPending(b, `Entry filled but protection failed: ${b.lastError}`, error); } }
+          else if (st === 'PARTIALLY_FILLED') { b.status = 'ENTRY_PARTIALLY_FILLED'; b.actualQty = String(o?.executedQty || o?.cumQty || ''); this._confirmBracketPending(b, o); this._markBracketOpened(b, o); }
           else if (['CANCELED','REJECTED','EXPIRED'].includes(st)) { b.status = 'CANCELED'; this._rejectBracketPending(b, `Entry order finished with status ${st}`, o); }
           b.updatedAt = Date.now();
         } catch {}
@@ -2028,7 +2046,7 @@ class CCXTExecutionAdapter extends ExecutionAdapter {
       const set = new Set((open || []).map((x) => String(x.clientAlgoId || '')));
 
       const lifecycleTicket = String(b.lifecycleTicket || b.entryOrderId || b.entryClientOrderId || '');
-      const lifecycleOpened = b.uiConfirmed || this._ticketOpened.has(lifecycleTicket);
+      const lifecycleOpened = this._ticketOpened.has(lifecycleTicket);
       if (['PROTECTED','CLOSING','ENTRY_FILLED','ERROR'].includes(b.status) && lifecycleOpened && positionKnown && posAmt === 0) { await this.cancelBracketProtection(b.bracketId); this._markBracketClosed(b); continue; }
 
       const expectsTp = positiveFiniteNumber(b.takeProfitPrice) !== undefined;
@@ -2057,7 +2075,13 @@ class CCXTExecutionAdapter extends ExecutionAdapter {
     const status = String(o?.X || '').toUpperCase();
     if (status === 'FILLED') {
       bracket.status = 'ENTRY_FILLED'; bracket.actualQty = String(o?.z || o?.q || bracket.expectedQty); bracket.updatedAt = Date.now();
-      try { await this._placeBracketProtection(bracket); this._confirmBracketPending(bracket, o); } catch (error) { bracket.status = 'ERROR'; bracket.lastError = error?.message || String(error); this._rejectBracketPending(bracket, `Entry filled but protection failed: ${bracket.lastError}`, error); }
+      this._confirmBracketPending(bracket, o);
+      this._markBracketOpened(bracket, o);
+      try { await this._placeBracketProtection(bracket); } catch (error) { bracket.status = 'ERROR'; bracket.lastError = error?.message || String(error); this._rejectBracketPending(bracket, `Entry filled but protection failed: ${bracket.lastError}`, error); }
+    } else if (status === 'PARTIALLY_FILLED') {
+      bracket.status = 'ENTRY_PARTIALLY_FILLED'; bracket.actualQty = String(o?.z || o?.q || ''); bracket.updatedAt = Date.now();
+      this._confirmBracketPending(bracket, o);
+      this._markBracketOpened(bracket, o);
     } else if (['CANCELED','EXPIRED','REJECTED'].includes(status)) {
       bracket.status = 'CANCELED'; bracket.updatedAt = Date.now();
       this._rejectBracketPending(bracket, `Entry order finished with status ${status}`, o);
@@ -2071,7 +2095,7 @@ class CCXTExecutionAdapter extends ExecutionAdapter {
       if (pa !== 0) continue;
       for (const b of this._brackets.values()) {
         const lifecycleTicket = String(b.lifecycleTicket || b.entryOrderId || b.entryClientOrderId || '');
-        const lifecycleOpened = b.uiConfirmed || this._ticketOpened.has(lifecycleTicket);
+        const lifecycleOpened = this._ticketOpened.has(lifecycleTicket);
         if (b.symbol === symbol && b.positionSide === ps && lifecycleOpened && !['CLOSED','CANCELED'].includes(b.status)) {
           b.status = 'CLOSING'; b.updatedAt = Date.now();
           await this.cancelBracketProtection(b.bracketId);

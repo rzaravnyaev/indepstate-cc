@@ -11,6 +11,7 @@ function makeAdapter() {
   adapter._ticketOpened = new Set();
   adapter._positionClosedTickets = new Set();
   adapter._brackets = new Map();
+  adapter._entryClientToBracket = new Map();
   adapter._cancelCalls = 0;
   adapter.mapSymbol = symbol => symbol === 'BTCUSDT' ? 'BTC/USDT:USDT' : symbol;
   adapter.cancelBracketProtection = async () => { adapter._cancelCalls += 1; };
@@ -52,6 +53,39 @@ function addBracket(adapter, suffix = '1') {
 (async () => {
   {
     const adapter = makeAdapter();
+    adapter.normalizeBinanceUsdmSymbol = async () => 'BTCUSDT';
+    adapter._getBinanceSymbolFilters = async () => ({ tickSize: 0.1, stepSize: 0.001, minNotional: 5 });
+    adapter._binanceSignedRequest = async (method, endpoint) => {
+      assert.strictEqual(method, 'POST');
+      assert.strictEqual(endpoint, '/fapi/v1/order');
+      return { orderId: 100, status: 'NEW' };
+    };
+    adapter._startBracketEntryWatcher = async () => {};
+    const confirmed = [];
+    const opened = [];
+    adapter.events.on('order:confirmed', event => confirmed.push(event));
+    adapter.events.on('position:opened', event => opened.push(event));
+
+    const result = await adapter._placeBinanceBracketEntry({
+      order: { symbol: 'BTCUSDT', side: 'buy', takeProfitPrice: 110, stopLossPrice: 90 },
+      symbol: 'BTC/USDT:USDT',
+      side: 'BUY',
+      amount: 1,
+      price: 100,
+      params: {},
+      cid: 'cid-entry'
+    });
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.strictEqual(result.providerOrderId, 'pending:cid-entry');
+    assert.strictEqual(confirmed.length, 1);
+    assert.strictEqual(confirmed[0].ticket, '100');
+    assert.strictEqual(opened.length, 0);
+    assert.strictEqual(adapter._brackets.get('cid-entry').status, 'ENTRY_PLACED');
+  }
+
+  {
+    const adapter = makeAdapter();
     const bracket = addBracket(adapter, '1');
     const confirmed = [];
     const opened = [];
@@ -65,6 +99,9 @@ function addBracket(adapter, suffix = '1') {
 
     const ticket = String(bracket.entryOrderId);
     assert.strictEqual(confirmed.length, 1);
+    assert.strictEqual(opened.length, 0);
+    adapter._markBracketOpened(bracket, { orderId: bracket.entryOrderId });
+    adapter._markBracketOpened(bracket, { orderId: bracket.entryOrderId });
     assert.strictEqual(opened.length, 1);
     assert.strictEqual(confirmed[0].ticket, ticket);
     assert.strictEqual(opened[0].ticket, ticket);
@@ -87,6 +124,7 @@ function addBracket(adapter, suffix = '1') {
     const closed = [];
     adapter.events.on('position:closed', event => closed.push(event));
     adapter._confirmBracketPending(bracket, { orderId: bracket.entryOrderId });
+    adapter._markBracketOpened(bracket, { orderId: bracket.entryOrderId });
 
     await adapter._onAccountUpdate({ a: { P: [{ s: 'BTCUSDT', ps: 'BOTH', pa: '0' }] } });
     await adapter._onAccountUpdate({ a: { P: [{ s: 'BTCUSDT', ps: 'BOTH', pa: '0' }] } });
