@@ -1,5 +1,8 @@
 const assert = require('assert');
 const { createActionsBus } = require('../app/services/actions-bus');
+const { createInstrumentInfoActionFunctions } = require('../app/services/instrumentInfo/actionFunctions');
+const { stripSymbol } = require('../app/services/tvListener/actionFunctions');
+const { optionLegs, optionLegPair } = require('../app/services/optionstrat/actionFunctions');
 
 async function run() {
   const executed = [];
@@ -9,6 +12,17 @@ async function run() {
       errors.push(err.message);
     }
   });
+  assert.deepStrictEqual(bus.listActionFunctions(), ['add', 'dist']);
+  const warmInstrumentInfo = {
+    peek() { return { metadata: { tickSize: 0.01 } }; },
+    toPoints(_context, delta) { return Math.round(Number(delta) / 0.01); }
+  };
+  for (const [name, fn] of Object.entries(createInstrumentInfoActionFunctions(warmInstrumentInfo))) {
+    bus.registerActionFunction(name, fn);
+  }
+  bus.registerActionFunction('stripSymbol', stripSymbol);
+  bus.registerActionFunction('optionLegs', optionLegs);
+  bus.registerActionFunction('optionLegPair', optionLegPair);
   bus.registerActionFunction('joinSymbolLevel', (symbol, price) => `${symbol}@${price}`);
 
   bus.configure([
@@ -155,13 +169,15 @@ async function run() {
   let warm = false;
   let lookups = 0;
   const asyncExecuted = [];
-  const asyncBus = createActionsBus({
-    instrumentInfo: {
-      peek() { return warm ? { metadata: { tickSize: 0.5 } } : null; },
-      async get() { lookups += 1; warm = true; return { metadata: { tickSize: 0.5 } }; },
-      toPoints(_context, delta) { return Math.round(Number(delta) / 0.5); }
-    }
-  });
+  const asyncBus = createActionsBus();
+  const coldInstrumentInfo = {
+    peek() { return warm ? { metadata: { tickSize: 0.5 } } : null; },
+    async get() { lookups += 1; warm = true; return { metadata: { tickSize: 0.5 } }; },
+    toPoints(_context, delta) { return Math.round(Number(delta) / 0.5); }
+  };
+  for (const [name, fn] of Object.entries(createInstrumentInfoActionFunctions(coldInstrumentInfo))) {
+    asyncBus.registerActionFunction(name, fn);
+  }
   asyncBus.setCommandRunner(cmd => asyncExecuted.push(cmd));
   asyncBus.configure([
     { event: 'cold', action: 'first distPts({price},{rayPrice})' },

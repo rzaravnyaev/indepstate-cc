@@ -10,7 +10,7 @@ const Module = require('module');
 async function run() {
   const handlers = {};
   const calls = [];
-  const descriptor = require('../app/services/points/config/tick-sizes-settings-descriptor.json');
+  const descriptor = require('../app/services/instrumentInfo/config/tick-sizes-settings-descriptor.json');
   const ipcRenderer = {
     on: (ch, fn) => { handlers[ch] = fn; },
     invoke: async (ch, ...args) => {
