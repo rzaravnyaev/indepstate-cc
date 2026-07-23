@@ -3,6 +3,7 @@ const fetch = require('node-fetch');
 const settings = require('../settings');
 const loadConfig = require('../../config/load');
 const { AddCommand } = require('../commands/add');
+const { stripSymbol } = require('./actionFunctions');
 
 settings.register(
   'tv-listener',
@@ -15,7 +16,14 @@ function intVal(v, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function registerActionFunctions(servicesApi = {}) {
+  const bus = servicesApi.actionBus;
+  if (!bus || typeof bus.registerActionFunction !== 'function') return [];
+  return [bus.registerActionFunction('stripSymbol', stripSymbol)].filter(Boolean);
+}
+
 function initService(servicesApi = {}) {
+  registerActionFunctions(servicesApi);
   const tvApi = servicesApi.tvListener = servicesApi.tvListener || {};
 
   let lastActivity = null;
@@ -150,4 +158,4 @@ function initService(servicesApi = {}) {
   });
 }
 
-module.exports = { initService };
+module.exports = { initService, registerActionFunctions };
