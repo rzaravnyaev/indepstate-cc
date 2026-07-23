@@ -17,8 +17,16 @@ mkdir "$env:LOCALAPPDATA/ISCC/config"
 copy app/services/orderCards/config/order-cards.json "$env:LOCALAPPDATA/ISCC/config/order-cards.json"
 ```
 
-Changes in `config/order-cards.json` (and other files) take effect on the next
-application start. The `config` directory under the local data path is ignored
+Changes made by directly editing `config/order-cards.json` (and other override
+files) take effect on the next application start. Saves made through the in-app
+Settings panel are applied immediately for settings that can be changed without
+interrupting active trading work. The Settings button and panel show a restart
+notice when a saved field controls a startup resource such as a broker provider,
+listening port, proxy, tunnel, file watcher, or enabled service list. Existing
+pending strategies keep their trigger configuration, while the resulting order
+still uses the latest sizing and trade-rule safety settings.
+
+The `config` directory under the local data path is ignored
 by git so personal settings aren't tracked. To log which configuration files are
 used to `logs/app.txt` in the local data path, set the `CONFIG_LOG` environment
 variable to `1` or `true` (logging is disabled by default).
@@ -248,4 +256,3 @@ overridden for specific instrument types:
 
 Additional rules can be added over time and wired up in `trade-rules.json`
 without requiring changes to callers.
-

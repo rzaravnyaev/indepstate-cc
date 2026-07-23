@@ -324,6 +324,20 @@ function createInstrumentInfoService({
     );
   }
 
+  function invalidateConfigTickSizes() {
+    let count = 0;
+    for (const record of cache.values()) {
+      if (!String(record.sources?.tickSize || '').startsWith('config:')) continue;
+      delete record.metadata.tickSize;
+      delete record.sources.tickSize;
+      record.metadataUpdatedAt = null;
+      ensureTickFallback(record);
+      emitUpdated(record, { quote: false, metadata: true });
+      count += 1;
+    }
+    return count;
+  }
+
   function on(eventName, handler) {
     emitter.on(eventName, handler);
     return () => emitter.off(eventName, handler);
@@ -336,6 +350,7 @@ function createInstrumentInfoService({
     resolveTickSize,
     getTickSizeResolution,
     toPoints,
+    invalidateConfigTickSizes,
     on,
     _cache: cache
   };

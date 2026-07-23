@@ -2,30 +2,31 @@
 const {ipcRenderer} = require('electron');
 const path = require('path');
 const loadConfig = require('./config/load');
+const settingsRuntime = require('./services/settings');
 const servicesApi = require('./services/servicesApi');
 const tradeRules = servicesApi.tradeRules || require('./services/tradeRules');
 const {detectInstrumentType} = require("./services/instruments");
 const {findTickSizeOverride, getDefaultTickSize} = require('./services/points');
 const orderCalc = servicesApi.orderCalculator || require('./services/orderCalculator');
 const { resolveLevelOrderDefaults, normalizePriceSource, resolveQuotePrice } = require('./services/levelOrder/strategy');
-const orderCardsCfg = loadConfig('../services/orderCards/config/order-cards.json');
+let orderCardsCfg = loadConfig('../services/orderCards/config/order-cards.json');
 let levelOrderCfg = loadConfig('../services/levelOrder/config/level-order.json');
 const envEquityStop = Number(process.env.DEFAULT_EQUITY_STOP_USD);
-const EQUITY_DEFAULT_STOP_USD = Number.isFinite(envEquityStop)
+let EQUITY_DEFAULT_STOP_USD = Number.isFinite(envEquityStop)
   ? envEquityStop
   : Number(orderCardsCfg?.defaultEquityStopUsd) || 0;
 
 const envCxStop = Number(process.env.DEFAULT_CX_STOP_USD);
-const CX_DEFAULT_STOP_USD = Number.isFinite(envCxStop)
+let CX_DEFAULT_STOP_USD = Number.isFinite(envCxStop)
   ? envCxStop
   : Number(orderCardsCfg?.defaultCxStopUsd) || 0;
 
-const SHOW_BID_ASK = !!(orderCardsCfg && orderCardsCfg.showBidAsk);
-const SHOW_SPREAD = !!(orderCardsCfg && orderCardsCfg.showSpread);
+let SHOW_BID_ASK = !!(orderCardsCfg && orderCardsCfg.showBidAsk);
+let SHOW_SPREAD = !!(orderCardsCfg && orderCardsCfg.showSpread);
 
 
 const envInstrRefresh = Number(process.env.INSTRUMENT_REFRESH_MS);
-const INSTRUMENT_REFRESH_MS = Number.isFinite(envInstrRefresh)
+let INSTRUMENT_REFRESH_MS = Number.isFinite(envInstrRefresh)
   ? envInstrRefresh
   : Number(orderCardsCfg?.instrumentRefreshMs) || 1000;
 let optionStratValuationRefreshMs = 5000;
@@ -39,8 +40,8 @@ const DEFAULT_OPTIONSTRAT_DISPLAY_FIELDS = {
 };
 let optionStratDisplayFields = {...DEFAULT_OPTIONSTRAT_DISPLAY_FIELDS};
 
-const CLOSED_CARD_EVENT_STRATEGY = orderCardsCfg?.closedCardEventStrategy || 'ignore';
-const BUTTON_ROWS = Number(orderCardsCfg?.buttonRows) || 1;
+let CLOSED_CARD_EVENT_STRATEGY = orderCardsCfg?.closedCardEventStrategy || 'ignore';
+let BUTTON_ROWS = Number(orderCardsCfg?.buttonRows) || 1;
 
 const DEFAULT_CARD_BUTTONS = [
   {label: 'BL', action: 'BL', style: 'bl'},
@@ -50,7 +51,7 @@ const DEFAULT_CARD_BUTTONS = [
   {label: 'SC', action: 'SC', style: 'sc'},
   {label: 'SFB', action: 'SFB', style: 'sc'}
 ];
-const CARD_BUTTONS = Array.isArray(orderCardsCfg?.buttons) && orderCardsCfg.buttons.length
+let CARD_BUTTONS = Array.isArray(orderCardsCfg?.buttons) && orderCardsCfg.buttons.length
   ? orderCardsCfg.buttons.map((b) => Array.isArray(b) ? {label: b[0], action: b[1], style: b[2]} : b)
     .filter((b) => b && b.label && b.action)
   : DEFAULT_CARD_BUTTONS;
@@ -82,7 +83,7 @@ const closedCardStrategies = {
   }
 };
 
-const handleClosedCard = closedCardStrategies[CLOSED_CARD_EVENT_STRATEGY] || closedCardStrategies.ignore;
+let handleClosedCard = closedCardStrategies[CLOSED_CARD_EVENT_STRATEGY] || closedCardStrategies.ignore;
 
 // ======= App state =======
 const state = {rows: [], filter: '', autoscroll: true};
@@ -171,10 +172,75 @@ const $settingsPanel = document.getElementById('settings-panel');
 const $settingsSections = document.getElementById('settings-sections');
 const $settingsFields = document.getElementById('settings-fields');
 const $settingsClose = document.getElementById('settings-close');
+const $settingsRestart = document.getElementById('settings-restart-required');
 const settingsForms = new Map();
 const DESCRIPTOR_META_KEYS = new Set(['description', 'type', 'item', 'default', 'enum']);
 
 loadRendererHooks();
+
+function applyOrderCardsConfig(config = {}) {
+  orderCardsCfg = config;
+  EQUITY_DEFAULT_STOP_USD = Number.isFinite(envEquityStop) ? envEquityStop : Number(config.defaultEquityStopUsd) || 0;
+  CX_DEFAULT_STOP_USD = Number.isFinite(envCxStop) ? envCxStop : Number(config.defaultCxStopUsd) || 0;
+  SHOW_BID_ASK = !!config.showBidAsk;
+  SHOW_SPREAD = !!config.showSpread;
+  INSTRUMENT_REFRESH_MS = Number.isFinite(envInstrRefresh) ? envInstrRefresh : Number(config.instrumentRefreshMs) || 1000;
+  CLOSED_CARD_EVENT_STRATEGY = config.closedCardEventStrategy || 'ignore';
+  BUTTON_ROWS = Number(config.buttonRows) || 1;
+  CARD_BUTTONS = Array.isArray(config.buttons) && config.buttons.length
+    ? config.buttons.map(b => Array.isArray(b) ? { label: b[0], action: b[1], style: b[2] } : b)
+      .filter(b => b && b.label && b.action)
+    : DEFAULT_CARD_BUTTONS;
+  handleClosedCard = closedCardStrategies[CLOSED_CARD_EVENT_STRATEGY] || closedCardStrategies.ignore;
+  render();
+}
+
+function renderRestartStatus(status = []) {
+  if (!$settingsRestart) return;
+  const entries = Array.isArray(status) ? status : [];
+  if (!entries.length) {
+    $settingsRestart.style.display = 'none';
+    $settingsRestart.textContent = '';
+    $settingsBtn.classList.remove('settings-restart-required');
+    $settingsBtn.title = 'Settings';
+    return;
+  }
+  $settingsRestart.textContent = `Restart required: ${entries.map(entry => `${entry.section} (${(entry.paths || []).join(', ')})`).join('; ')}`;
+  $settingsRestart.style.display = 'block';
+  $settingsBtn.classList.add('settings-restart-required');
+  $settingsBtn.title = $settingsRestart.textContent;
+}
+
+settingsRuntime.onApply('ui', ({ config }) => {
+  if (typeof config.autoscroll === 'boolean') state.autoscroll = config.autoscroll;
+});
+settingsRuntime.onApply('order-cards', ({ config }) => applyOrderCardsConfig(config));
+settingsRuntime.onApply('level-order', ({ config }) => {
+  levelOrderCfg = config || {};
+  render();
+});
+settingsRuntime.onApply('optionstrat', ({ config }) => {
+  const ms = Number(config?.valuationRefreshMs);
+  if (Number.isFinite(ms) && ms > 0) optionStratValuationRefreshMs = ms;
+  optionStratDisplayFields = normalizeOptionStratDisplayFields(config?.displayFields);
+  render();
+});
+
+ipcRenderer.on('settings:changed', async (_event, result) => {
+  if (!result?.saved) return;
+  const local = await settingsRuntime.applyConfig(result.section, result.config, result.appliedPaths || [], { source: 'settings-ui-renderer' });
+  const failedPaths = new Set(local.restartRequiredPaths || []);
+  settingsRuntime.commitAppliedConfig(
+    result.section,
+    result.config,
+    (result.appliedPaths || []).filter(pathName => !failedPaths.has(pathName))
+  );
+  if (local.errors.length) {
+    await ipcRenderer.invoke('settings:renderer-failed', result.section, result.appliedPaths || [], local.errors.join('; ')).catch(() => {});
+  }
+  ipcRenderer.invoke('settings:restart-status').then(renderRestartStatus).catch(() => {});
+});
+ipcRenderer.invoke('settings:restart-status').then(renderRestartStatus).catch(() => {});
 
 function loadRendererHooks() {
   let dirs = [];
@@ -198,6 +264,7 @@ function loadRendererHooks() {
 
 function loadSettingsSections() {
   settingsForms.clear();
+  ipcRenderer.invoke('settings:restart-status').then(renderRestartStatus).catch(() => {});
   ipcRenderer.invoke('settings:list').then((sections = []) => {
     $settingsSections.innerHTML = '';
     let prevGroup;
@@ -218,6 +285,94 @@ function loadSettingsSections() {
   });
 }
 
+function setNestedSettingValue(obj, path, value) {
+  const parts = path.split('.');
+  let cur = obj;
+  for (let i = 0; i < parts.length - 1; i++) {
+    const part = parts[i];
+    const nextIsIndex = /^\d+$/.test(parts[i + 1]);
+    if (nextIsIndex) {
+      if (!Array.isArray(cur[part])) cur[part] = [];
+    } else if (typeof cur[part] !== 'object' || cur[part] === null || Array.isArray(cur[part])) {
+      cur[part] = {};
+    }
+    cur = cur[part];
+  }
+  const last = parts[parts.length - 1];
+  if (/^\d+$/.test(last)) cur[Number(last)] = value;
+  else cur[last] = value;
+}
+
+function getNestedSettingValue(obj, path) {
+  if (!path) return obj;
+  return path.split('.').reduce((value, part) => value == null ? undefined : value[part], obj);
+}
+
+function cloneSettingsValue(value) {
+  return value == null ? value : JSON.parse(JSON.stringify(value));
+}
+
+function serializeStructuredSettingsForm(form, name) {
+  const data = {};
+  for (const input of form.querySelectorAll('input')) {
+    const key = input.dataset.field;
+    if (!key) continue;
+    if (key.split('.').some(part => part.startsWith('__'))) continue;
+    let value;
+    if (input.dataset.arrayMarker === '1') value = [];
+    else if (input.type === 'checkbox') value = input.checked;
+    else if (input.type === 'number') value = input.value === '' ? null : Number(input.value);
+    else value = input.value;
+    setNestedSettingValue(data, key, value);
+  }
+  if (name === 'tick-sizes') {
+    const bySymbol = {};
+    for (const row of form.querySelectorAll('.tick-size-symbol-row')) {
+      const symbol = row.querySelector('input[data-role="symbol"]')?.value.trim();
+      const tickSize = Number(row.querySelector('input[data-role="tickSize"]')?.value);
+      if (symbol && Number.isFinite(tickSize) && tickSize > 0) bySymbol[symbol] = tickSize;
+    }
+    data.bySymbol = bySymbol;
+  }
+  return data;
+}
+
+function setRawSettingsError(form, message = '') {
+  const error = form.querySelector('[data-role="raw-json-error"]');
+  if (!error) return;
+  error.textContent = message;
+  error.style.display = message ? 'block' : 'none';
+}
+
+function parseRawSettingsForm(form) {
+  const editor = form.querySelector('textarea[data-role="raw-json"]');
+  if (!editor) return serializeStructuredSettingsForm(form, form.dataset.section);
+  try {
+    const config = JSON.parse(editor.value);
+    if (form.dataset.rawEditorType === 'array' && !Array.isArray(config)) {
+      throw new Error('Configuration must be a JSON array');
+    }
+    if (form.dataset.rawEditorType !== 'array' && (!config || typeof config !== 'object' || Array.isArray(config))) {
+      throw new Error('Configuration must be a JSON object');
+    }
+    setRawSettingsError(form);
+    return config;
+  } catch (error) {
+    setRawSettingsError(form, error?.message || String(error));
+    throw error;
+  }
+}
+
+function serializeSettingsForm(form, name) {
+  if (form.dataset.editorMode !== 'json') return serializeStructuredSettingsForm(form, name);
+  const rawConfig = parseRawSettingsForm(form);
+  const rawPath = form.dataset.rawEditorPath || '';
+  if (!rawPath) return rawConfig;
+  const config = serializeStructuredSettingsForm(form, name);
+  setNestedSettingValue(config, rawPath, rawConfig);
+  return config;
+}
+
 function getSettingsInput(form, field) {
   return form.querySelector(`input[data-field="${field}"]`);
 }
@@ -234,7 +389,7 @@ function formatWindowState(state) {
   return `width ${value('width')} / height ${value('height')} / x ${value('x')} / y ${value('y')}`;
 }
 
-function appendUiWindowStateTools(form) {
+function appendUiWindowStateTools(form, parent = form) {
   const group = document.createElement('div');
   group.className = 'settings-group settings-window-state';
 
@@ -262,7 +417,7 @@ function appendUiWindowStateTools(form) {
   actions.appendChild(applyBtn);
 
   group.appendChild(actions);
-  form.insertBefore(group, form.firstChild);
+  parent.insertBefore(group, parent.firstChild);
 
   let lastState = null;
   const refresh = () => ipcRenderer.invoke('window:get-state')
@@ -291,7 +446,7 @@ function appendUiWindowStateTools(form) {
   refresh();
 }
 
-function appendTickSizeBySymbolTools(form, bySymbol = {}) {
+function appendTickSizeBySymbolTools(form, bySymbol = {}, parent = form) {
   const group = document.createElement('div');
   group.className = 'settings-group settings-dynamic-map';
 
@@ -356,7 +511,7 @@ function appendTickSizeBySymbolTools(form, bySymbol = {}) {
     markDirty();
   });
   group.appendChild(add);
-  form.appendChild(group);
+  parent.appendChild(group);
 }
 
 function showSection(name) {
@@ -371,12 +526,26 @@ function showSection(name) {
   }
   ipcRenderer.invoke('settings:get', name).then((res = {}) => {
     const cfg = res.config || res;
+    const descriptorProperties = (res.descriptor && res.descriptor.properties) || {};
+    const rawEditorDescriptor = descriptorProperties.rawEditor === true
+      ? {}
+      : (descriptorProperties.rawEditor && typeof descriptorProperties.rawEditor === 'object'
+          ? descriptorProperties.rawEditor
+          : null);
     const desc = { ...((res.descriptor && res.descriptor.options) || {}) };
-    const formCfg = name === 'tick-sizes' ? { ...(cfg || {}) } : cfg;
-    if (name === 'tick-sizes') delete formCfg.bySymbol;
     if (name === 'tick-sizes') delete desc.bySymbol;
     const form = document.createElement('form');
     form.dataset.section = name;
+    form.dataset.editorMode = 'form';
+    const structuredEditor = document.createElement('div');
+    structuredEditor.className = 'settings-structured-editor';
+    form.appendChild(structuredEditor);
+    let structuredEditorChanged = false;
+    let structuredConfigValue = cfg;
+    const markStructuredDirty = () => {
+      structuredEditorChanged = true;
+      form.dataset.dirty = '1';
+    };
     const hasOwn = Object.prototype.hasOwnProperty;
     const getDefault = (d) => (d && hasOwn.call(d, 'default') ? d.default : undefined);
     const build = (parent, cfgObj, descObj, prefix = '') => {
@@ -422,7 +591,7 @@ function showSection(name) {
             rm.addEventListener('click', () => {
               itemsWrap.removeChild(group);
               reindex();
-              form.dataset.dirty = '1';
+              markStructuredDirty();
             });
             head.appendChild(rm);
             group.appendChild(head);
@@ -455,10 +624,10 @@ function showSection(name) {
             }
             input.dataset.field = path;
             input.addEventListener('input', () => {
-              form.dataset.dirty = '1';
+              markStructuredDirty();
             });
             input.addEventListener('change', () => {
-              form.dataset.dirty = '1';
+              markStructuredDirty();
             });
             label.appendChild(input);
             const rm = document.createElement('button');
@@ -468,7 +637,7 @@ function showSection(name) {
             rm.addEventListener('click', () => {
               itemsWrap.removeChild(label);
               reindex();
-              form.dataset.dirty = '1';
+              markStructuredDirty();
             });
             label.appendChild(rm);
             itemsWrap.appendChild(label);
@@ -499,7 +668,7 @@ function showSection(name) {
           else if (itemDesc && itemDesc.type === 'boolean') v = false;
           else v = '';
           renderItem(v, itemsWrap.children.length);
-          form.dataset.dirty = '1';
+          markStructuredDirty();
         });
         parent.appendChild(itemsWrap);
         parent.appendChild(addBtn);
@@ -556,19 +725,171 @@ function showSection(name) {
           const path = prefix ? `${prefix}.${key}` : key;
           input.dataset.field = path;
           input.addEventListener('input', () => {
-            form.dataset.dirty = '1';
+            markStructuredDirty();
           });
           input.addEventListener('change', () => {
-            form.dataset.dirty = '1';
+            markStructuredDirty();
           });
           label.appendChild(input);
           parent.appendChild(label);
         }
       }
     };
-    build(form, formCfg, desc);
-    if (name === 'ui') appendUiWindowStateTools(form);
-    if (name === 'tick-sizes') appendTickSizeBySymbolTools(form, cfg.bySymbol || {});
+    const renderStructuredEditor = (config) => {
+      structuredEditor.innerHTML = '';
+      const structuredConfig = name === 'tick-sizes' ? { ...(config || {}) } : config;
+      if (name === 'tick-sizes') delete structuredConfig.bySymbol;
+      build(structuredEditor, structuredConfig, desc);
+      if (name === 'ui') appendUiWindowStateTools(form, structuredEditor);
+      if (name === 'tick-sizes') appendTickSizeBySymbolTools(form, config?.bySymbol || {}, structuredEditor);
+      structuredConfigValue = config;
+      structuredEditorChanged = false;
+    };
+    renderStructuredEditor(cfg);
+
+    if (rawEditorDescriptor) {
+      const rawEditorPath = String(rawEditorDescriptor.path || '');
+      const initialRawValue = getNestedSettingValue(cfg, rawEditorPath);
+      const rawEditorType = rawEditorDescriptor.type || (Array.isArray(initialRawValue) ? 'array' : 'object');
+      form.dataset.rawEditorPath = rawEditorPath;
+      form.dataset.rawEditorType = rawEditorType;
+      const controls = document.createElement('div');
+      controls.className = 'settings-editor-controls';
+      const formButton = document.createElement('button');
+      formButton.type = 'button';
+      formButton.textContent = 'Form';
+      formButton.dataset.editorMode = 'form';
+      formButton.className = 'active';
+      const jsonButton = document.createElement('button');
+      jsonButton.type = 'button';
+      jsonButton.textContent = rawEditorDescriptor.label || (rawEditorPath ? `${rawEditorPath} JSON` : 'JSON');
+      jsonButton.dataset.editorMode = 'json';
+      controls.append(formButton, jsonButton);
+      form.insertBefore(controls, structuredEditor);
+
+      const rawEditor = document.createElement('div');
+      rawEditor.className = 'settings-raw-editor';
+      rawEditor.hidden = true;
+      const textarea = document.createElement('textarea');
+      textarea.dataset.role = 'raw-json';
+      textarea.spellcheck = false;
+      textarea.setAttribute('aria-label', `${descriptorProperties.name || name} JSON configuration`);
+      const error = document.createElement('div');
+      error.className = 'settings-raw-error';
+      error.dataset.role = 'raw-json-error';
+      error.style.display = 'none';
+      rawEditor.append(textarea, error);
+
+      if (rawEditorDescriptor.snippets === true && rawEditorType === 'array') {
+        const snippetToggle = document.createElement('button');
+        snippetToggle.type = 'button';
+        snippetToggle.className = 'settings-snippet-toggle';
+        snippetToggle.textContent = rawEditorDescriptor.snippetLabel || 'Add JSON snippet';
+        const snippetPanel = document.createElement('div');
+        snippetPanel.className = 'settings-snippet-panel';
+        snippetPanel.hidden = true;
+        const snippetEditor = document.createElement('textarea');
+        snippetEditor.dataset.role = 'raw-json-snippet';
+        snippetEditor.spellcheck = false;
+        snippetEditor.placeholder = '{ "event": "event-name", "action": "commandLine:command" }';
+        const snippetError = document.createElement('div');
+        snippetError.className = 'settings-raw-error';
+        snippetError.dataset.role = 'raw-json-snippet-error';
+        snippetError.style.display = 'none';
+        const snippetActions = document.createElement('div');
+        snippetActions.className = 'settings-snippet-actions';
+        const appendSnippet = document.createElement('button');
+        appendSnippet.type = 'button';
+        appendSnippet.textContent = 'Append';
+        const cancelSnippet = document.createElement('button');
+        cancelSnippet.type = 'button';
+        cancelSnippet.textContent = 'Cancel';
+        snippetActions.append(appendSnippet, cancelSnippet);
+        snippetPanel.append(snippetEditor, snippetError, snippetActions);
+        rawEditor.append(snippetToggle, snippetPanel);
+
+        const setSnippetError = (message = '') => {
+          snippetError.textContent = message;
+          snippetError.style.display = message ? 'block' : 'none';
+        };
+        snippetToggle.addEventListener('click', () => {
+          snippetPanel.hidden = false;
+          snippetEditor.focus();
+        });
+        cancelSnippet.addEventListener('click', () => {
+          snippetPanel.hidden = true;
+          snippetEditor.value = '';
+          setSnippetError();
+        });
+        appendSnippet.addEventListener('click', () => {
+          try {
+            const current = parseRawSettingsForm(form);
+            const parsed = JSON.parse(snippetEditor.value);
+            const additions = Array.isArray(parsed) ? parsed : [parsed];
+            if (!additions.length || additions.some(item => !item || typeof item !== 'object' || Array.isArray(item))) {
+              throw new Error('Snippet must be an action object or an array of action objects');
+            }
+            textarea.value = JSON.stringify([...current, ...additions], null, 2);
+            form.dataset.dirty = '1';
+            setRawSettingsError(form);
+            setSnippetError();
+            snippetEditor.value = '';
+            snippetPanel.hidden = true;
+            textarea.focus();
+          } catch (snippetFailure) {
+            setSnippetError(snippetFailure?.message || String(snippetFailure));
+            snippetEditor.focus();
+          }
+        });
+      }
+      form.appendChild(rawEditor);
+
+      const activateMode = (mode) => {
+        if (mode === form.dataset.editorMode) return true;
+        if (mode === 'json') {
+          const config = structuredEditorChanged
+            ? serializeStructuredSettingsForm(form, name)
+            : structuredConfigValue;
+          const rawValue = getNestedSettingValue(config, rawEditorPath);
+          textarea.value = JSON.stringify(
+            rawValue === undefined ? (rawEditorType === 'array' ? [] : {}) : rawValue,
+            null,
+            2
+          );
+        } else {
+          let rawValue;
+          try {
+            rawValue = parseRawSettingsForm(form);
+          } catch {
+            textarea.focus();
+            return false;
+          }
+          let rawConfig = cloneSettingsValue(structuredEditorChanged
+            ? serializeStructuredSettingsForm(form, name)
+            : structuredConfigValue);
+          if (rawEditorPath) {
+            if (!rawConfig || typeof rawConfig !== 'object' || Array.isArray(rawConfig)) rawConfig = {};
+            setNestedSettingValue(rawConfig, rawEditorPath, rawValue);
+          }
+          else rawConfig = rawValue;
+          renderStructuredEditor(rawConfig);
+        }
+        form.dataset.editorMode = mode;
+        structuredEditor.hidden = mode !== 'form';
+        rawEditor.hidden = mode !== 'json';
+        formButton.classList.toggle('active', mode === 'form');
+        jsonButton.classList.toggle('active', mode === 'json');
+        if (mode === 'json') textarea.focus();
+        return true;
+      };
+
+      formButton.addEventListener('click', () => activateMode('form'));
+      jsonButton.addEventListener('click', () => activateMode('json'));
+      textarea.addEventListener('input', () => {
+        form.dataset.dirty = '1';
+        try { parseRawSettingsForm(form); } catch {}
+      });
+    }
     settingsForms.set(name, form);
     $settingsFields.innerHTML = '';
     $settingsFields.appendChild(form);
@@ -3255,78 +3576,41 @@ $settingsBtn.addEventListener('click', () => {
   $settingsPanel.style.display = 'flex';
   loadSettingsSections();
 });
-function saveAndCloseSettingsPanel() {
-  const setNested = (obj, path, value) => {
-    const parts = path.split('.');
-    let cur = obj;
-    for (let i = 0; i < parts.length - 1; i++) {
-      const p = parts[i];
-      const next = parts[i + 1];
-      const nextIsIndex = /^\d+$/.test(next);
-      if (nextIsIndex) {
-        if (!Array.isArray(cur[p])) cur[p] = [];
-      } else {
-        if (typeof cur[p] !== 'object' || cur[p] === null || Array.isArray(cur[p])) cur[p] = {};
-      }
-      cur = cur[p];
-    }
-    const last = parts[parts.length - 1];
-    if (/^\d+$/.test(last)) {
-      cur[Number(last)] = value;
-    } else {
-      cur[last] = value;
-    }
-  };
-  for (const [name, form] of settingsForms.entries()) {
-    if (form.dataset.dirty) {
-      const data = {};
-      for (const inp of form.querySelectorAll('input')) {
-        const k = inp.dataset.field;
-        if (!k) continue;
-        if (k.split('.').some(part => part.startsWith('__'))) continue;
-        let val;
-        if (inp.dataset.arrayMarker === '1') val = [];
-        else if (inp.type === 'checkbox') val = inp.checked;
-        else if (inp.type === 'number') val = inp.value === '' ? null : Number(inp.value);
-        else val = inp.value;
-        setNested(data, k, val);
-      }
-      if (name === 'tick-sizes') {
-        const bySymbol = {};
-        for (const row of form.querySelectorAll('.tick-size-symbol-row')) {
-          const symbol = row.querySelector('input[data-role="symbol"]')?.value.trim();
-          const tickSize = Number(row.querySelector('input[data-role="tickSize"]')?.value);
-          if (symbol && Number.isFinite(tickSize) && tickSize > 0) {
-            bySymbol[symbol] = tickSize;
-          }
+let settingsSaveInProgress = false;
+async function saveAndCloseSettingsPanel() {
+  if (settingsSaveInProgress) return;
+  settingsSaveInProgress = true;
+  const results = [];
+  try {
+    const pendingSaves = [];
+    for (const [name, form] of settingsForms.entries()) {
+      if (form.dataset.dirty) {
+        try {
+          pendingSaves.push([name, serializeSettingsForm(form, name)]);
+        } catch (error) {
+          showSection(name);
+          form.querySelector('textarea[data-role="raw-json"]')?.focus();
+          toast(`Invalid JSON in ${name}: ${error?.message || error}`);
+          return;
         }
-        data.bySymbol = bySymbol;
-      }
-      ipcRenderer.invoke('settings:set', name, data).catch(() => {
-      });
-      if (name === 'ui') {
-        state.autoscroll = !!data.autoscroll;
-        const windowState = {};
-        for (const field of ['width', 'height', 'x', 'y']) {
-          if (Number.isFinite(data[field])) windowState[field] = data[field];
-        }
-        ipcRenderer.invoke('window:set-state', windowState).catch(() => {
-        });
-      }
-      if (name === 'optionstrat') {
-        const ms = Number(data.valuationRefreshMs);
-        if (Number.isFinite(ms) && ms > 0) optionStratValuationRefreshMs = ms;
-        optionStratDisplayFields = normalizeOptionStratDisplayFields(data.displayFields);
-        render();
-      }
-      if (name === 'level-order') {
-        levelOrderCfg = data || {};
-        render();
       }
     }
+    for (const [name, data] of pendingSaves) {
+      results.push(await ipcRenderer.invoke('settings:set', name, data));
+    }
+    const failures = results.flatMap(result => result?.errors || []);
+    const restart = await ipcRenderer.invoke('settings:restart-status').catch(() => []);
+    renderRestartStatus(restart);
+    if (failures.length) toast(`Settings saved; apply failed: ${failures.join('; ')}`);
+    else if (Array.isArray(restart) && restart.length) toast('Settings saved; restart required for some changes');
+    else if (results.length) toast('Settings saved and applied');
+    $settingsPanel.style.display = 'none';
+    settingsForms.clear();
+  } catch (error) {
+    toast(`Settings save failed: ${error?.message || error}`);
+  } finally {
+    settingsSaveInProgress = false;
   }
-  $settingsPanel.style.display = 'none';
-  settingsForms.clear();
 }
 
 $settingsClose.addEventListener('click', saveAndCloseSettingsPanel);

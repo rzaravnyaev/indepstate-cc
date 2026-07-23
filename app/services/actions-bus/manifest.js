@@ -79,6 +79,12 @@ function initService(servicesApi = {}) {
   } else {
     bus.configure([]);
   }
+  settings.onApply('actions-bus', ({ config }) => {
+    bus.configure(config?.enabled !== false && Array.isArray(config?.actions) ? config.actions : []);
+    for (const win of (require('electron').BrowserWindow?.getAllWindows?.() || [])) {
+      if (!win.isDestroyed()) win.webContents.send('actions-bus:changed', bus.listNamedActions());
+    }
+  });
 
   if (ipcMain && typeof ipcMain.handle === 'function') {
     ipcMain.handle('actions-bus:list', () => bus.listNamedActions());
@@ -140,6 +146,10 @@ function hookRenderer(ipcRenderer) {
   }
 
   refresh();
+  ipcRenderer.on('actions-bus:changed', (_event, list) => {
+    if (Array.isArray(list)) render(list);
+    else refresh();
+  });
 }
 
 module.exports = { initService, hookRenderer };

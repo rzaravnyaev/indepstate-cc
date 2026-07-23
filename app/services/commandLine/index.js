@@ -34,7 +34,7 @@ function expandAlias(input, aliases) {
 }
 
 function createCommandService(opts = {}) {
-  const aliases = normalizeAliases(opts.aliases);
+  let aliases = normalizeAliases(opts.aliases);
   const extra = Array.isArray(opts.commands)
     ? opts.commands.map(c => {
         if (c && typeof c === 'object') {
@@ -78,7 +78,19 @@ function createCommandService(opts = {}) {
     }
   }
 
-  return { run };
+  function configure({ aliases: nextAliases } = {}) {
+    if (nextAliases !== undefined) aliases = normalizeAliases(nextAliases);
+  }
+
+  function replaceCommands(predicate, commands = []) {
+    if (typeof predicate !== 'function') return;
+    for (let i = list.length - 1; i >= 2; i -= 1) {
+      if (predicate(list[i])) list.splice(i, 1);
+    }
+    list.push(...commands);
+  }
+
+  return { run, configure, replaceCommands };
 }
 
 module.exports = { createCommandService, expandAlias, normalizeAliases };

@@ -9,6 +9,11 @@ try {
   cfg = {};
 }
 
+function configure(next = {}) {
+  cfg = next && typeof next === 'object' ? JSON.parse(JSON.stringify(next)) : {};
+  return cfg;
+}
+
 function wildcardToRegExp(pat) {
   return new RegExp('^' + pat.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$', 'i');
 }
@@ -125,4 +130,4 @@ function resolveTickSize({ symbol, explicitTickSize, quoteTickSize, quoteTickSou
   return getDefaultTickSize();
 }
 
-module.exports = { toPoints, digitsFallbackPoints, findTickSizeOverride, findTickSizeFromConfig, getDefaultTickSize, resolveTickSize };
+module.exports = { toPoints, digitsFallbackPoints, findTickSizeOverride, findTickSizeFromConfig, getDefaultTickSize, resolveTickSize, configure };

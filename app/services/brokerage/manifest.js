@@ -1,4 +1,4 @@
-const { initExecutionConfig, getAdapter, getExecutionConfig, getProviderConfig } = require('./adapterRegistry');
+const { initExecutionConfig, updateExecutionRouting, getAdapter, getExecutionConfig, getProviderConfig } = require('./adapterRegistry');
 const { resolveProvider, resolveAdapter } = require('./providerResolver');
 const path = require('path');
 const settings = require('../settings');
@@ -22,6 +22,11 @@ function initService(servicesApi = {}) {
   }
   initExecutionConfig(cfg);
   servicesApi.brokerage = { getAdapter, getExecutionConfig, getProviderConfig, resolveProvider, resolveAdapter };
+  settings.onApply('execution', ({ config, changedPaths }) => {
+    const unavailable = updateExecutionRouting(config, changedPaths);
+    if (!unavailable.length) return;
+    return { restartRequiredPaths: unavailable };
+  });
 }
 
 module.exports = { initService };

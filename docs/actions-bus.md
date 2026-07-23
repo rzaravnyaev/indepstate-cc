@@ -9,6 +9,31 @@ with a `name` exposes a checkbox that enables or disables the action at runtime.
 
 ## Configuration
 
+Open **Settings > Actions bus** to edit this configuration. The section opens in the structured
+**Form** view; select **Actions JSON** to edit or replace only the `actions` array as strict JSON.
+The bus-level `enabled` option remains in the Form view and is preserved when editing actions as JSON.
+Switching between the views preserves unsaved changes.
+
+Use **Add action JSON** to append a copied action object or an array of action objects without
+replacing the existing actions. Invalid JSON and non-action snippet values are shown inline and are
+not saved. Saving through Settings updates future actions and refreshes the toolbar toggles
+immediately.
+
+For example, the Actions JSON editor accepts:
+
+```json
+[
+  {
+    "event": "order:placed",
+    "action": "commandLine:notify order {id}",
+    "name": "Notify on new orders"
+  }
+]
+```
+
+Edits made directly to an Actions bus override JSON file are only loaded during application startup
+and therefore require a restart.
+
 ```json
 {
   "enabled": true,
@@ -51,8 +76,8 @@ Objects are stringified and missing values resolve to empty strings.
   - `bindings` (optional) – array of `{ event, action }` objects. Each binding inherits the parent's
     `name`, `label`, and `enabled` default and runs only when the toggle is enabled.
 
-The configuration order determines the toggle order in the UI. Removing an action from the config also
-removes its toggle on the next reload.
+The configuration order determines the toggle order in the UI. Removing an action through Settings
+also removes its toggle after the settings are saved.
 
 ## Function expressions
 
