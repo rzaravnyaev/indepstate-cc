@@ -253,6 +253,40 @@ const trackerIndex = new Map(); // ticket -> { ticker, tp, sp, cid }
 const levelOrderPositionMonitors = new Map(); // parent requestId -> { timer, children, ... }
 const levelOrderTerminalGroups = new Map(); // parent requestId -> { providerName, symbol, tickets, openedTickets }
 
+function emitLevelOrderPositionsReadyIfComplete(parentRequestId, terminalGroup) {
+  if (!parentRequestId || !terminalGroup || terminalGroup.positionsReadyEmitted) return false;
+  const expectedCount = Number(terminalGroup.expectedCount);
+  if (!Number.isFinite(expectedCount) || expectedCount <= 0) return false;
+  if (terminalGroup.tickets.size < expectedCount || terminalGroup.openedTickets.size < expectedCount) return false;
+
+  terminalGroup.positionsReadyEmitted = true;
+  const expectedQty = Array.from(terminalGroup.qtyByTicket?.values?.() || [])
+    .reduce((sum, qty) => sum + (Number.isFinite(Number(qty)) ? Number(qty) : 0), 0);
+  const payload = {
+    requestId: parentRequestId,
+    parentRequestId,
+    provider: terminalGroup.providerName,
+    symbol: terminalGroup.symbol,
+    expectedQty,
+    foundQty: expectedQty,
+    expectedCids: Array.from(terminalGroup.cids || []),
+    foundCids: Array.from(terminalGroup.cids || [])
+  };
+  appendJsonl(EXEC_LOG, { t: nowTs(), kind: 'level-order-positions-ready', source: 'lifecycle', ...payload });
+  console.log('[LEVEL][POSITIONS_READY]', {
+    requestId: parentRequestId,
+    symbol: terminalGroup.symbol,
+    foundQty: expectedQty,
+    expectedQty,
+    source: 'lifecycle'
+  });
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('level-order:positions-ready', payload);
+  }
+  stopLevelOrderPositionMonitor(parentRequestId);
+  return true;
+}
+
 function extractCid(s) {
   const m = String(s).match(/cid[:=]\s*([a-f0-9]{8,})/i);
   return m ? m[1] : undefined;
@@ -294,13 +328,24 @@ function wireAdapter(adapter, providerName) {
           providerName,
           symbol: rec.order?.symbol || rec.order?.ticker || '',
           tickets: new Set(),
-          openedTickets: new Set()
+          openedTickets: new Set(),
+          expectedCount: Number(rec.order?.meta?.childCount) || 1,
+          qtyByTicket: new Map(),
+          cids: new Set()
         };
         levelOrderTerminalGroups.set(parentRequestId, terminalGroup);
       }
       terminalGroup.providerName = providerName;
       terminalGroup.symbol = terminalGroup.symbol || rec.order?.symbol || rec.order?.ticker || '';
+      terminalGroup.expectedCount = Math.max(
+        Number(terminalGroup.expectedCount) || 0,
+        Number(rec.order?.meta?.childCount) || 1
+      );
       terminalGroup.tickets.add(normalizedTicket);
+      terminalGroup.qtyByTicket ||= new Map();
+      terminalGroup.qtyByTicket.set(normalizedTicket, Number(rec.order?.qty) || 0);
+      terminalGroup.cids ||= new Set();
+      if (pendingId) terminalGroup.cids.add(String(pendingId));
     }
     if (normalizedTicket) confirmedOrderByTicket.set(normalizedTicket, rec.order);
     if (pendingId) confirmedOrderByCid.set(String(pendingId), rec.order);
@@ -309,6 +354,9 @@ function wireAdapter(adapter, providerName) {
     appendJsonl(EXEC_LOG, { t: payload.ts, kind: 'confirm', ...payload, mtOrder });
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('execution:result', payload);
+    }
+    if (parentRequestId) {
+      emitLevelOrderPositionsReadyIfComplete(parentRequestId, levelOrderTerminalGroups.get(parentRequestId));
     }
     const info = trackerPending.get(rec.reqId);
     if (info) {
@@ -359,9 +407,34 @@ function wireAdapter(adapter, providerName) {
       || (cid ? pendingIndex.get(cid)?.order : null);
     events.emit('position:opened', { ticket, order, origOrder: enrichedOrigOrder, provider: providerName });
     const parentRequestId = enrichedOrigOrder?.meta?.parentRequestId;
+    console.log('[EXEC][POSITION_OPENED]', {
+      provider: providerName,
+      ticket: normalizedTicket,
+      parentRequestId,
+      cid: enrichedOrigOrder?.meta?.cid || cid
+    });
     if (parentRequestId && normalizedTicket) {
-      const terminalGroup = levelOrderTerminalGroups.get(parentRequestId);
-      if (terminalGroup) terminalGroup.openedTickets.add(normalizedTicket);
+      let terminalGroup = levelOrderTerminalGroups.get(parentRequestId);
+      if (!terminalGroup) {
+        terminalGroup = {
+          providerName,
+          symbol: enrichedOrigOrder?.symbol || enrichedOrigOrder?.ticker || order?.symbol || '',
+          tickets: new Set(),
+          openedTickets: new Set(),
+          expectedCount: Number(enrichedOrigOrder?.meta?.childCount) || 1,
+          qtyByTicket: new Map(),
+          cids: new Set()
+        };
+        levelOrderTerminalGroups.set(parentRequestId, terminalGroup);
+      }
+      terminalGroup.tickets.add(normalizedTicket);
+      terminalGroup.openedTickets.add(normalizedTicket);
+      terminalGroup.qtyByTicket ||= new Map();
+      terminalGroup.qtyByTicket.set(normalizedTicket, Number(enrichedOrigOrder?.qty ?? order?.size) || 0);
+      terminalGroup.cids ||= new Set();
+      const lifecycleCid = enrichedOrigOrder?.meta?.cid;
+      if (lifecycleCid) terminalGroup.cids.add(String(lifecycleCid));
+      emitLevelOrderPositionsReadyIfComplete(parentRequestId, terminalGroup);
     }
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('position:opened', { ticket, order, origOrder: enrichedOrigOrder, provider: providerName });
@@ -746,7 +819,11 @@ async function cancelLevelOrderTerminalOrders(parentRequestId) {
 }
 
 function startLevelOrderPositionMonitor({ adapter, providerName, requestId, strategyId, symbol, children, timeoutMs = 45000, intervalMs = 750 }) {
-  if (!requestId || !adapter || typeof adapter.listOpenOrders !== 'function') return;
+  if (
+    !requestId
+    || !adapter
+    || (typeof adapter.listOpenPositions !== 'function' && typeof adapter.listOpenOrders !== 'function')
+  ) return;
   stopLevelOrderPositionMonitor(requestId);
   const startedAt = Date.now();
   const monitor = { adapter, providerName, requestId, strategyId, symbol, children: children || [], timer: null };
@@ -754,8 +831,10 @@ function startLevelOrderPositionMonitor({ adapter, providerName, requestId, stra
 
   const tick = async () => {
     try {
-      const openOrders = await adapter.listOpenOrders();
-      const scan = scanLevelOrderPositions(openOrders, monitor.children, symbol);
+      const openPositions = typeof adapter.listOpenPositions === 'function'
+        ? await adapter.listOpenPositions(symbol)
+        : await adapter.listOpenOrders(symbol);
+      const scan = scanLevelOrderPositions(openPositions, monitor.children, symbol);
       if (scan.ready) {
         stopLevelOrderPositionMonitor(requestId);
         const payload = {
@@ -785,9 +864,11 @@ function startLevelOrderPositionMonitor({ adapter, providerName, requestId, stra
       let sample = [];
       let scan = null;
       try {
-        const openOrders = await adapter.listOpenOrders();
-        scan = scanLevelOrderPositions(openOrders, monitor.children, symbol);
-        sample = (openOrders || []).slice(0, 10).map(pos => ({
+        const openPositions = typeof adapter.listOpenPositions === 'function'
+          ? await adapter.listOpenPositions(symbol)
+          : await adapter.listOpenOrders(symbol);
+        scan = scanLevelOrderPositions(openPositions, monitor.children, symbol);
+        sample = (openPositions || []).slice(0, 10).map(pos => ({
           ticket: pos?.ticket,
           type: pos?.type || pos?.order_type || pos?.cmd,
           symbol: pos?.symbol,

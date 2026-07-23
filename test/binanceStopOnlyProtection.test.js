@@ -121,6 +121,19 @@ async function testExistingTpAndSlBehaviorIsPreserved() {
   assert.strictEqual(bracket.status, 'PROTECTED');
 }
 
+async function testConcurrentProtectionPlacementIsDeduplicated() {
+  const adapter = makeProtectionAdapter();
+  const bracket = makeBracket();
+
+  await Promise.all([
+    adapter._placeBracketProtection(bracket),
+    adapter._placeBracketProtection(bracket)
+  ]);
+
+  assert.strictEqual(adapter.requests.length, 1);
+  assert.strictEqual(bracket.status, 'PROTECTED');
+}
+
 async function testReconcileDoesNotRecreateAbsentTakeProfit() {
   const adapter = initializeLifecycleState(Object.create(CCXTExecutionAdapter.prototype));
   adapter.provider = 'ccxt:binance';
@@ -155,6 +168,7 @@ async function run() {
   await testStopOnlyLevelOrderKeepsTakeProfitAbsent();
   await testPlacesOnlyStopLoss();
   await testExistingTpAndSlBehaviorIsPreserved();
+  await testConcurrentProtectionPlacementIsDeduplicated();
   await testReconcileDoesNotRecreateAbsentTakeProfit();
   console.log('binanceStopOnlyProtection.test passed');
 }

@@ -182,6 +182,14 @@ function addBracket(adapter, suffix = '1') {
     assert.strictEqual(opened[0].origOrder, bracket.origOrder);
     assert.strictEqual(bracket.actualQty, '2');
     assert.strictEqual(bracket.status, 'PROTECTED');
+
+    const positions = await adapter.listOpenPositions('BTCUSDT');
+    assert.strictEqual(positions.length, 1);
+    assert.strictEqual(positions[0].ticket, String(bracket.entryOrderId));
+    assert.strictEqual(positions[0].qty, 2);
+    assert.strictEqual(positions[0].clientOrderId, bracket.pendingId);
+    assert.strictEqual(positions[0].__isPosition, true);
+    assert.deepStrictEqual(await adapter.listOpenPositions('ETHUSDT'), []);
   }
 
   {

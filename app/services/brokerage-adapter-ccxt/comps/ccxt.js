@@ -1074,7 +1074,19 @@ class CCXTExecutionAdapter extends ExecutionAdapter {
       origOrder: pending?.order || bracket.origOrder
     });
   }
+
   async _placeBracketProtection(bracket) {
+    if (bracket?.protectionPromise) return bracket.protectionPromise;
+    const task = this._placeBracketProtectionOnce(bracket);
+    bracket.protectionPromise = task;
+    try {
+      return await task;
+    } finally {
+      if (bracket.protectionPromise === task) bracket.protectionPromise = null;
+    }
+  }
+
+  async _placeBracketProtectionOnce(bracket) {
     try {
       const qty = String(bracket.actualQty || bracket.expectedQty);
       const closeSide = bracket.direction === 'LONG' ? 'SELL' : 'BUY';
@@ -2237,7 +2249,39 @@ class CCXTExecutionAdapter extends ExecutionAdapter {
     }
   }
 
-  /** @returns {Promise<any[]>} історія закритих ордерів (як аналог позицій) */
+  /** @returns {Promise<any[]>} App-tracked open position records for lifecycle recovery. */
+  async listOpenPositions(symbol) {
+    const requestedSymbol = String(symbol || '').trim().toUpperCase();
+    const positions = [];
+    for (const bracket of this._brackets.values()) {
+      const ticket = String(bracket.lifecycleTicket || bracket.entryOrderId || bracket.entryClientOrderId || '');
+      if (!ticket || !this._ticketOpened.has(ticket) || ['CLOSED','CANCELED'].includes(bracket.status)) continue;
+      const originalSymbol = String(bracket.origOrder?.symbol || bracket.origOrder?.ticker || bracket.mappedSymbol || bracket.symbol || '');
+      const symbolAliases = [
+        originalSymbol,
+        bracket.mappedSymbol,
+        bracket.symbol
+      ].map(value => String(value || '').trim().toUpperCase());
+      if (requestedSymbol && !symbolAliases.includes(requestedSymbol)) continue;
+      const cid = String(bracket.pendingId || bracket.origOrder?.meta?.cid || '').trim();
+      const qty = Number(bracket.actualQty || bracket.expectedQty || 0);
+      positions.push({
+        ticket,
+        id: ticket,
+        orderId: ticket,
+        symbol: originalSymbol,
+        qty,
+        contracts: qty,
+        clientOrderId: cid,
+        comment: bracket.origOrder?.comment || (cid ? `cid:${cid}` : ''),
+        side: bracket.origOrder?.side,
+        __isPosition: true
+      });
+    }
+    return positions;
+  }
+
+  /** @returns {Promise<any[]>} Closed order history used as a position-history fallback. */
   async listClosedPositions() {
     try {
       if (typeof this.exchange.fetchClosedOrders === 'function') {
