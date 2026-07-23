@@ -24,6 +24,16 @@
       "takeProfitPts": {
         "type": "number",
         "description": "Optional default take profit in points"
+      },
+      "buyPriceSource": {
+        "type": "string",
+        "enum": ["bid", "ask", "mid"],
+        "description": "Price source for LB button"
+      },
+      "sellPriceSource": {
+        "type": "string",
+        "enum": ["bid", "ask", "mid"],
+        "description": "Price source for LS button"
       }
     },
     "symbols": {
@@ -53,6 +63,16 @@
         "takeProfitPts": {
           "type": "number",
           "description": "Optional take profit in points"
+        },
+        "buyPriceSource": {
+          "type": "string",
+          "enum": ["bid", "ask", "mid"],
+          "description": "Price source for LB button"
+        },
+        "sellPriceSource": {
+          "type": "string",
+          "enum": ["bid", "ask", "mid"],
+          "description": "Price source for LS button"
         }
       }
     }

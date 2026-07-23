@@ -55,8 +55,8 @@ async function run() {
   const t = renderer.__testing;
   await new Promise(resolve => setTimeout(resolve, 0));
   t.setLevelOrderConfig({
-    defaults: { riskUsd: 50, maxLot: 3, stopOffsetPts: 4, takeProfitPts: 12 },
-    symbols: []
+    defaults: { riskUsd: 50, maxLot: 3, stopOffsetPts: 4, takeProfitPts: 12, buyPriceSource: 'bid', sellPriceSource: 'bid' },
+    symbols: [{ ticker: 'TSTMID', buyPriceSource: 'mid', sellPriceSource: 'bid' }]
   });
 
   const row = { cardType: 'levelOrder', ticker: 'TST', event: 'levelOrder', time: 0, level: 100, provider: 'simulated', instrumentType: 'EQ' };
@@ -92,6 +92,8 @@ async function run() {
   assert.strictEqual(call.payload.maxLot, 3);
   assert.strictEqual(call.payload.minLot, 1);
   assert.strictEqual(call.payload.takeProfitPts, 12);
+  assert.strictEqual(call.payload.buyPriceSource, 'bid');
+  assert.strictEqual(call.payload.sellPriceSource, 'bid');
   assert.strictEqual(call.payload.pointSize, 0.001);
   assert.strictEqual(call.payload.tickSize, 0.001);
   const parentRequestId = call.payload.requestId;
@@ -189,6 +191,16 @@ async function run() {
   assert(updatedCard);
   assert.strictEqual(updatedCard.querySelector('.level-order-line input.level').value, '110');
   assert.strictEqual(updatedCard.querySelector('.level-order-line input.sl').value, '7');
+
+  const midRow = { cardType: 'levelOrder', ticker: 'TSTMID', event: 'levelOrder', time: 12, level: 100, provider: 'simulated', instrumentType: 'EQ' };
+  t.instrumentInfo.set('TSTMID', { bid: 101, tickSize: 0.5 });
+  handlers['orders:new'](null, midRow);
+  const midCard = t.cardByKey(t.rowKey(midRow));
+  const midButtons = Array.from(midCard.querySelectorAll('button.btn'));
+  assert.strictEqual(midButtons.find(b => b.dataset.kind === 'LB').disabled, true);
+  assert.strictEqual(midButtons.find(b => b.dataset.kind === 'LB').title, 'Bid/Ask quote required');
+  assert.strictEqual(midButtons.find(b => b.dataset.kind === 'LS').disabled, false);
+  assert.strictEqual(midCard.querySelector('.card__note').textContent, 'Bid/Ask quote required');
 
   const row2 = { cardType: 'levelOrder', ticker: 'TST2', event: 'levelOrder', time: 1, level: 100, provider: 'simulated', instrumentType: 'EQ' };
   t.instrumentInfo.set('TST2', { bid: 101, ask: 102, price: 101.5, tickSize: 0.5 });

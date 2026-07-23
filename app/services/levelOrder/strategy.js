@@ -15,6 +15,37 @@ function normalizeMinLot(value) {
   return Number.isFinite(n) && n > 0 ? n : 1;
 }
 
+const PRICE_SOURCES = new Set(['bid', 'ask', 'mid']);
+
+function normalizePriceSource(value, fallback) {
+  const source = String(value || '').trim().toLowerCase();
+  return PRICE_SOURCES.has(source) ? source : fallback;
+}
+
+function quoteRequiredReason(source) {
+  if (source === 'ask') return 'Ask quote required';
+  if (source === 'mid') return 'Bid/Ask quote required';
+  return 'Bid quote required';
+}
+
+function resolveQuotePrice({ bid, ask, source }) {
+  const bidPrice = finiteNumber(bid);
+  const askPrice = finiteNumber(ask);
+  if (source === 'ask') {
+    return Number.isFinite(askPrice) && askPrice > 0
+      ? { ok: true, price: askPrice, bid: bidPrice, ask: askPrice }
+      : { ok: false, reason: quoteRequiredReason(source) };
+  }
+  if (source === 'mid') {
+    return Number.isFinite(bidPrice) && bidPrice > 0 && Number.isFinite(askPrice) && askPrice > 0
+      ? { ok: true, price: (bidPrice + askPrice) / 2, bid: bidPrice, ask: askPrice }
+      : { ok: false, reason: quoteRequiredReason(source) };
+  }
+  return Number.isFinite(bidPrice) && bidPrice > 0
+    ? { ok: true, price: bidPrice, bid: bidPrice, ask: askPrice }
+    : { ok: false, reason: quoteRequiredReason(source) };
+}
+
 function roundQtyToStep(value, minLot = 1) {
   const qty = Number(value);
   const step = normalizeMinLot(minLot);
@@ -34,7 +65,9 @@ function resolveLevelOrderDefaults(config = {}, ticker) {
     maxLot: finiteNumber(override?.maxLot, finiteNumber(defaults.maxLot, 0)),
     minLot: normalizeMinLot(finiteNumber(override?.minLot, finiteNumber(defaults.minLot, 1))),
     stopOffsetPts: finiteNumber(override?.stopOffsetPts, finiteNumber(defaults.stopOffsetPts, null)),
-    takeProfitPts: finiteNumber(override?.takeProfitPts, finiteNumber(defaults.takeProfitPts, null))
+    takeProfitPts: finiteNumber(override?.takeProfitPts, finiteNumber(defaults.takeProfitPts, null)),
+    buyPriceSource: normalizePriceSource(override?.buyPriceSource, normalizePriceSource(defaults.buyPriceSource, 'bid')),
+    sellPriceSource: normalizePriceSource(override?.sellPriceSource, normalizePriceSource(defaults.sellPriceSource, 'bid'))
   };
 }
 
@@ -68,6 +101,9 @@ function calculateLimitBidTradePlan({
   minLot = 1,
   takeProfitPts,
   bid,
+  ask,
+  buyPriceSource,
+  sellPriceSource,
   tickSize,
   lot = 1,
   orderCalculator
@@ -78,22 +114,27 @@ function calculateLimitBidTradePlan({
   }
 
   const lvl = finiteNumber(level);
-  const bidPrice = finiteNumber(bid);
   const tick = finiteNumber(tickSize);
   const risk = finiteNumber(riskUsd);
   const offset = finiteNumber(stopOffsetPts);
   const qtyStep = normalizeMinLot(minLot);
   if (!Number.isFinite(lvl) || lvl <= 0) return { ok: false, reason: 'Level > 0 required' };
-  if (!Number.isFinite(bidPrice) || bidPrice <= 0) return { ok: false, reason: 'Bid quote required' };
   if (!Number.isFinite(tick) || tick <= 0) return { ok: false, reason: 'Tick size required' };
   if (!Number.isFinite(risk) || risk <= 0) return { ok: false, reason: 'Risk $ > 0 required' };
   if (!Number.isFinite(offset) || offset <= 0) return { ok: false, reason: 'Stop offset pts > 0 required' };
 
   const isBuy = sideAction === 'LB';
-  if (isBuy && bidPrice < lvl) return { ok: false, reason: 'Cannot buy when bid is below level' };
-  if (!isBuy && bidPrice > lvl) return { ok: false, reason: 'Cannot sell when bid is above level' };
+  const priceSource = isBuy
+    ? normalizePriceSource(buyPriceSource, 'bid')
+    : normalizePriceSource(sellPriceSource, 'bid');
+  const quotePrice = resolveQuotePrice({ bid, ask, source: priceSource });
+  if (!quotePrice.ok) return quotePrice;
+  const referencePrice = quotePrice.price;
 
-  const levelDistancePts = Math.abs(bidPrice - lvl) / tick;
+  if (isBuy && referencePrice < lvl) return { ok: false, reason: `Cannot buy when ${priceSource} is below level` };
+  if (!isBuy && referencePrice > lvl) return { ok: false, reason: `Cannot sell when ${priceSource} is above level` };
+
+  const levelDistancePts = Math.abs(referencePrice - lvl) / tick;
   const stopPts = levelDistancePts + offset;
   const stopPrice = isBuy ? lvl - offset * tick : lvl + offset * tick;
   const qty = orderCalculator.qty({
@@ -115,7 +156,10 @@ function calculateLimitBidTradePlan({
     orderKind: isBuy ? 'BL' : 'SL',
     orderSide: isBuy ? 'buy' : 'sell',
     level: lvl,
-    bid: bidPrice,
+    bid: quotePrice.bid,
+    ask: quotePrice.ask,
+    priceSource,
+    referencePrice,
     tickSize: tick,
     riskUsd: risk,
     stopOffsetPts: offset,
@@ -131,6 +175,9 @@ function calculateLimitBidTradePlan({
 
 module.exports = {
   resolveLevelOrderDefaults,
+  normalizePriceSource,
+  resolveQuotePrice,
+  quoteRequiredReason,
   splitQuantity,
   roundQtyToStep,
   calculateLimitBidTradePlan

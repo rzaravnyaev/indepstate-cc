@@ -1088,6 +1088,7 @@ function setupIpc(orderSvc) {
       const instrumentSnapshot = await instrumentInfo.get({ provider: providerName, symbol, instrumentType, payload }, { forceQuote: true });
       const quote = instrumentSnapshot?.quote;
       const bid = Number(quote?.bid);
+      const ask = Number(quote?.ask);
       const tickSize = instrumentInfo.resolveTickSize(
         { provider: providerName, symbol, instrumentType, payload },
         { explicitTickSize: payload.tickSize }
@@ -1103,6 +1104,9 @@ function setupIpc(orderSvc) {
         minLot: payload.minLot ?? instrumentSnapshot?.metadata?.quantityStep,
         takeProfitPts: payload.takeProfitPts,
         bid,
+        ask,
+        buyPriceSource: payload.buyPriceSource,
+        sellPriceSource: payload.sellPriceSource,
         tickSize,
         lot: payload.lot || 1,
         orderCalculator: orderCalc
@@ -1119,7 +1123,7 @@ function setupIpc(orderSvc) {
         const childPayload = {
           ticker: symbol,
           event: 'levelOrder',
-          price: plan.bid,
+          price: plan.referencePrice,
           kind: plan.orderKind,
           instrumentType,
           tickSize: plan.tickSize,
@@ -1138,6 +1142,9 @@ function setupIpc(orderSvc) {
             childCount: plan.childQtys.length,
             level: plan.level,
             bid: plan.bid,
+            ask: plan.ask,
+            priceSource: plan.priceSource,
+            referencePrice: plan.referencePrice,
             stopOffsetPts: plan.stopOffsetPts,
             minLot: plan.minLot,
             quantityStep: plan.minLot,

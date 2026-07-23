@@ -61,22 +61,38 @@ const orderCalculator = {
 
 (function testDefaults() {
   const cfg = {
-    defaults: { riskUsd: 50, maxLot: 0, minLot: 1, stopOffsetPts: 10, takeProfitPts: null },
-    symbols: [{ ticker: 'SPX.cfd', riskUsd: 100, maxLot: 3, minLot: 0.01, stopOffsetPts: 5, takeProfitPts: 30 }]
+    defaults: { riskUsd: 50, maxLot: 0, minLot: 1, stopOffsetPts: 10, takeProfitPts: null, buyPriceSource: 'bid', sellPriceSource: 'bid' },
+    symbols: [{ ticker: 'SPX.cfd', riskUsd: 100, maxLot: 3, minLot: 0.01, stopOffsetPts: 5, takeProfitPts: 30, buyPriceSource: 'mid', sellPriceSource: 'ask' }]
   };
   assert.deepStrictEqual(resolveLevelOrderDefaults(cfg, 'SPX.cfd'), {
     riskUsd: 100,
     maxLot: 3,
     minLot: 0.01,
     stopOffsetPts: 5,
-    takeProfitPts: 30
+    takeProfitPts: 30,
+    buyPriceSource: 'mid',
+    sellPriceSource: 'ask'
   });
   assert.deepStrictEqual(resolveLevelOrderDefaults(cfg, 'AAPL'), {
     riskUsd: 50,
     maxLot: 0,
     minLot: 1,
     stopOffsetPts: 10,
-    takeProfitPts: null
+    takeProfitPts: null,
+    buyPriceSource: 'bid',
+    sellPriceSource: 'bid'
+  });
+  assert.deepStrictEqual(resolveLevelOrderDefaults({
+    defaults: { buyPriceSource: 'bad', sellPriceSource: '' },
+    symbols: [{ ticker: 'BAD', buyPriceSource: 'nope', sellPriceSource: 'MID' }]
+  }, 'BAD'), {
+    riskUsd: null,
+    maxLot: 0,
+    minLot: 1,
+    stopOffsetPts: null,
+    takeProfitPts: null,
+    buyPriceSource: 'bid',
+    sellPriceSource: 'mid'
   });
 })();
 
@@ -90,12 +106,16 @@ const orderCalculator = {
     stopOffsetPts: 2,
     maxLot: 5,
     takeProfitPts: 9,
-    bid: 101,
+    bid: 100,
+    ask: 101,
+    buyPriceSource: 'ask',
     tickSize: 0.5,
     orderCalculator
   });
   assert.strictEqual(buy.ok, true);
   assert.strictEqual(buy.orderKind, 'BL');
+  assert.strictEqual(buy.priceSource, 'ask');
+  assert.strictEqual(buy.referencePrice, 101);
   assert.strictEqual(buy.levelDistancePts, 2);
   assert.strictEqual(buy.stopPts, 4);
   assert.strictEqual(buy.stopPrice, 99);
@@ -112,20 +132,76 @@ const orderCalculator = {
     stopOffsetPts: 2,
     maxLot: 0,
     bid: 99,
+    ask: 100,
+    sellPriceSource: 'bid',
     tickSize: 0.5,
     orderCalculator
   });
   assert.strictEqual(sell.ok, true);
   assert.strictEqual(sell.orderKind, 'SL');
+  assert.strictEqual(sell.priceSource, 'bid');
+  assert.strictEqual(sell.referencePrice, 99);
   assert.strictEqual(sell.stopPrice, 101);
   assert.deepStrictEqual(sell.childQtys, [55]);
 
   assert.strictEqual(calculateLimitBidTradePlan({
-    action: 'LB', level: 100, riskUsd: 1, stopOffsetPts: 1, bid: 99, tickSize: 1, orderCalculator
+    action: 'LB', level: 100, riskUsd: 1, stopOffsetPts: 1, bid: 99, ask: 99, buyPriceSource: 'ask', tickSize: 1, orderCalculator
   }).ok, false);
   assert.strictEqual(calculateLimitBidTradePlan({
-    action: 'LS', level: 100, riskUsd: 1, stopOffsetPts: 1, bid: 101, tickSize: 1, orderCalculator
+    action: 'LS', level: 100, riskUsd: 1, stopOffsetPts: 1, bid: 101, ask: 101, sellPriceSource: 'bid', tickSize: 1, orderCalculator
   }).ok, false);
+})();
+
+(function testPriceSources() {
+  const mid = calculateLimitBidTradePlan({
+    action: 'LB',
+    ticker: 'TST',
+    instrumentType: 'EQ',
+    level: 100,
+    riskUsd: 100,
+    stopOffsetPts: 1,
+    maxLot: 0,
+    bid: 100,
+    ask: 102,
+    buyPriceSource: 'mid',
+    tickSize: 1,
+    orderCalculator
+  });
+  assert.strictEqual(mid.ok, true);
+  assert.strictEqual(mid.priceSource, 'mid');
+  assert.strictEqual(mid.referencePrice, 101);
+  assert.strictEqual(mid.levelDistancePts, 1);
+
+  const missingMid = calculateLimitBidTradePlan({
+    action: 'LB',
+    level: 100,
+    riskUsd: 1,
+    stopOffsetPts: 1,
+    bid: 100,
+    buyPriceSource: 'mid',
+    tickSize: 1,
+    orderCalculator
+  });
+  assert.strictEqual(missingMid.ok, false);
+  assert.strictEqual(missingMid.reason, 'Bid/Ask quote required');
+
+  const fallback = calculateLimitBidTradePlan({
+    action: 'LB',
+    ticker: 'TST',
+    instrumentType: 'EQ',
+    level: 98,
+    riskUsd: 100,
+    stopOffsetPts: 1,
+    maxLot: 0,
+    bid: 99,
+    ask: 101,
+    buyPriceSource: 'last',
+    tickSize: 1,
+    orderCalculator
+  });
+  assert.strictEqual(fallback.ok, true);
+  assert.strictEqual(fallback.priceSource, 'bid');
+  assert.strictEqual(fallback.referencePrice, 99);
 })();
 
 (function testSplitRemainder() {
@@ -148,6 +224,7 @@ const orderCalculator = {
     maxLot: 50,
     minLot: 0.01,
     bid: 100,
+    ask: 100,
     tickSize: 1,
     orderCalculator: {
       qty() { return 100.03; }
