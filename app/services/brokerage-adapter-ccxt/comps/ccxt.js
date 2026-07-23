@@ -5,6 +5,20 @@ const crypto = require('crypto');
 const events = require('../../events');
 const orderCalc = require('../../orderCalculator');
 
+function positiveFiniteNumber(value) {
+  if (value == null || value === '') return undefined;
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : undefined;
+}
+
+function firstPositiveFiniteNumber(...values) {
+  for (const value of values) {
+    const number = positiveFiniteNumber(value);
+    if (number !== undefined) return number;
+  }
+  return undefined;
+}
+
 class CCXTExecutionAdapter extends ExecutionAdapter {
   /**
    * @param {Object} cfg
@@ -841,11 +855,9 @@ class CCXTExecutionAdapter extends ExecutionAdapter {
 
   _shouldUseBinanceBracketFlow({ ccxtType, order }) {
     if (!this._isBinanceUsdmLike() || ccxtType !== 'limit') return false;
-    const hasAbsTp = Number.isFinite(Number(order.takeProfitPrice ?? order.tpPrice));
-    const hasAbsSl = Number.isFinite(Number(order.stopLossPrice ?? order.slPrice));
-    const hasPtsTp = Number.isFinite(Number(order.tp ?? order.takePts ?? order?.meta?.takePts));
-    const hasPtsSl = Number.isFinite(Number(order.sl ?? order.stopPts ?? order?.meta?.stopPts));
-    return (hasAbsTp && hasAbsSl) || (hasPtsTp && hasPtsSl);
+    const absSl = firstPositiveFiniteNumber(order.stopLossPrice, order.slPrice);
+    const slPts = firstPositiveFiniteNumber(order.sl, order.stopPts, order?.meta?.stopPts);
+    return absSl !== undefined || slPts !== undefined;
   }
 
   _makeBracketIds(bracketId) {
@@ -859,21 +871,32 @@ class CCXTExecutionAdapter extends ExecutionAdapter {
 
 
   _resolveBinanceBracketPrices({ order, direction, entryPrice, tickSize }) {
-    const absTp = Number(order.takeProfitPrice ?? order.tpPrice);
-    const absSl = Number(order.stopLossPrice ?? order.slPrice);
-    if (Number.isFinite(absTp) && Number.isFinite(absSl)) {
+    const absTp = firstPositiveFiniteNumber(order.takeProfitPrice, order.tpPrice);
+    const absSl = firstPositiveFiniteNumber(order.stopLossPrice, order.slPrice);
+    const tpPts = firstPositiveFiniteNumber(order.tp, order.takePts, order?.meta?.takePts);
+    const slPts = firstPositiveFiniteNumber(order.sl, order.stopPts, order?.meta?.stopPts);
+    if (absSl === undefined && slPts === undefined) throw new Error('Missing SL value (absolute or points)');
+
+    const usesPointStop = absSl === undefined;
+    const usesPointTp = absTp === undefined && tpPts !== undefined;
+    if (!usesPointStop && !usesPointTp) {
       return { takeProfitPrice: absTp, stopLossPrice: absSl, source: 'absolute' };
     }
-    const tpPts = Number(order.tp ?? order.takePts ?? order?.meta?.takePts);
-    const slPts = Number(order.sl ?? order.stopPts ?? order?.meta?.stopPts);
-    if (!Number.isFinite(tpPts) || !Number.isFinite(slPts)) throw new Error('Missing TP/SL values (absolute or points)');
+
     const tick = Number(tickSize) > 0 ? Number(tickSize) : 0.01;
     const entry = Number(entryPrice);
     if (!Number.isFinite(entry) || entry <= 0) throw new Error('Invalid entry price for TP/SL resolver');
-    if (direction === 'LONG') {
-      return { takeProfitPrice: entry + tpPts * tick, stopLossPrice: entry - slPts * tick, source: 'points' };
-    }
-    return { takeProfitPrice: entry - tpPts * tick, stopLossPrice: entry + slPts * tick, source: 'points' };
+    const isLong = direction === 'LONG';
+    const takeProfitPrice = absTp !== undefined
+      ? absTp
+      : tpPts !== undefined
+        ? entry + (isLong ? 1 : -1) * tpPts * tick
+        : undefined;
+    const stopLossPrice = absSl !== undefined
+      ? absSl
+      : entry + (isLong ? -1 : 1) * slPts * tick;
+    const source = (absTp !== undefined || absSl !== undefined) ? 'mixed' : 'points';
+    return { takeProfitPrice, stopLossPrice, source };
   }
 
   _extractProtectiveOrderPrice(order = {}) {
@@ -971,7 +994,9 @@ class CCXTExecutionAdapter extends ExecutionAdapter {
     console.log('[EXEC][BINANCE_SIZE]', { symbol: nativeSymbol, riskUsd, stopPts, exchangeTickSize: tickSize, stepSize, inputAmount: amount, effectiveAmount, qtyRounded, priceRounded, source: 'exchangeInfo' });
     if ((qtyRounded * priceRounded) < minNotional) return { status: 'rejected', provider: this.provider, reason: 'MIN_NOTIONAL validation failed' };
     const { takeProfitPrice, stopLossPrice, source } = this._resolveBinanceBracketPrices({ order, direction, entryPrice: priceRounded, tickSize });
-    const tp = String(this._roundToStep(takeProfitPrice, tickSize || 0.01, 'round'));
+    const tp = takeProfitPrice === undefined
+      ? undefined
+      : String(this._roundToStep(takeProfitPrice, tickSize || 0.01, 'round'));
     const sl = String(this._roundToStep(stopLossPrice, tickSize || 0.01, 'round'));
 
     const entryReq = { symbol: nativeSymbol, side: direction === 'LONG' ? 'BUY' : 'SELL', type: 'LIMIT', timeInForce: 'GTC', quantity: String(qtyRounded), price: String(priceRounded), newClientOrderId: ids.entryClientOrderId };
@@ -1036,22 +1061,39 @@ class CCXTExecutionAdapter extends ExecutionAdapter {
       const open = await this._binanceSignedRequest('GET', '/fapi/v1/openAlgoOrders', { symbol: bracket.symbol }).catch(() => []);
       const mark = await this._binancePublicRequest('/fapi/v1/premiumIndex', { symbol: bracket.symbol }).catch(() => ({}));
       const markPrice = Number(mark?.markPrice);
-      const tpNum = Number(bracket.takeProfitPrice); const slNum = Number(bracket.stopLossPrice);
+      const tpNum = positiveFiniteNumber(bracket.takeProfitPrice);
+      const slNum = positiveFiniteNumber(bracket.stopLossPrice);
+      const hasTp = tpNum !== undefined;
+      if (slNum === undefined) throw new Error('Missing stop-loss price for Binance protection');
       if (Number.isFinite(markPrice)) {
-        const ok = bracket.direction === 'LONG' ? (tpNum > markPrice && slNum < markPrice) : (tpNum < markPrice && slNum > markPrice);
-        if (!ok) throw new Error(`Invalid protection prices: ${bracket.direction} requires TP/SL around mark, got TP=${tpNum}, SL=${slNum}, mark=${markPrice}`);
+        const slOk = bracket.direction === 'LONG' ? slNum < markPrice : slNum > markPrice;
+        const tpOk = !hasTp || (bracket.direction === 'LONG' ? tpNum > markPrice : tpNum < markPrice);
+        if (!slOk || !tpOk) {
+          const tpDescription = hasTp ? `TP=${tpNum}, ` : '';
+          throw new Error(`Invalid protection prices: ${bracket.direction} requires protection around mark, got ${tpDescription}SL=${slNum}, mark=${markPrice}`);
+        }
       }
       const openIds = new Set((Array.isArray(open) ? open : []).map((x) => String(x.clientAlgoId || '')));
       let createdTp = false;
-      const tpReq = { ...common, type: 'TAKE_PROFIT_MARKET', triggerPrice: bracket.takeProfitPrice, clientAlgoId: tpId };
+      const tpReq = hasTp
+        ? { ...common, type: 'TAKE_PROFIT_MARKET', triggerPrice: bracket.takeProfitPrice, clientAlgoId: tpId }
+        : null;
       const slReq = { ...common, type: 'STOP_MARKET', triggerPrice: bracket.stopLossPrice, clientAlgoId: slId };
-      console.log(`[${this.provider}] Binance bracket protection request`, { bracketId: bracket.bracketId, direction: bracket.direction, entryPrice: bracket.entryPrice, markPrice, tickSize: bracket.tickSize, source: bracket.protectionPriceSource, tpReq, slReq });
-      if (!openIds.has(tpId)) {
+      const protectionLog = { bracketId: bracket.bracketId, direction: bracket.direction, entryPrice: bracket.entryPrice, markPrice, tickSize: bracket.tickSize, source: bracket.protectionPriceSource };
+      if (tpReq) protectionLog.tpReq = tpReq;
+      protectionLog.slReq = slReq;
+      console.log(`[${this.provider}] Binance bracket protection request`, protectionLog);
+      if (tpReq && !openIds.has(tpId)) {
         await this._binanceSignedRequest('POST', '/fapi/v1/algoOrder', tpReq);
         createdTp = true;
       }
-      bracket.tpClientAlgoId = tpId;
-      this._algoClientToBracket.set(tpId, bracket.bracketId);
+      if (tpReq) {
+        bracket.tpClientAlgoId = tpId;
+        this._algoClientToBracket.set(tpId, bracket.bracketId);
+      } else {
+        bracket.tpClientAlgoId = null;
+        this._algoClientToBracket.delete(tpId);
+      }
       if (!openIds.has(slId)) {
         try {
           await this._binanceSignedRequest('POST', '/fapi/v1/algoOrder', slReq);
@@ -1941,8 +1983,10 @@ class CCXTExecutionAdapter extends ExecutionAdapter {
 
       if (['PROTECTED','CLOSING','ENTRY_FILLED','ERROR'].includes(b.status) && posAmt === 0) { await this.cancelBracketProtection(b.bracketId); b.status = 'CLOSED'; b.updatedAt = Date.now(); continue; }
 
-      const hasTp = b.tpClientAlgoId && set.has(b.tpClientAlgoId);
-      const hasSl = b.slClientAlgoId && set.has(b.slClientAlgoId);
+      const expectsTp = positiveFiniteNumber(b.takeProfitPrice) !== undefined;
+      const expectsSl = positiveFiniteNumber(b.stopLossPrice) !== undefined;
+      const hasTp = !expectsTp || (b.tpClientAlgoId && set.has(b.tpClientAlgoId));
+      const hasSl = !expectsSl || (b.slClientAlgoId && set.has(b.slClientAlgoId));
       if (posAmt > 0 && ['ENTRY_FILLED','PROTECTED','ERROR'].includes(b.status) && (!hasTp || !hasSl)) {
         try { await this._placeBracketProtection(b); } catch {}
       }
