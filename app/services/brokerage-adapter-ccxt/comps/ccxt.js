@@ -1077,6 +1077,15 @@ class CCXTExecutionAdapter extends ExecutionAdapter {
 
   async _placeBracketProtection(bracket) {
     if (bracket?.protectionPromise) return bracket.protectionPromise;
+    const visibilityGraceMs = Math.max(
+      0,
+      Number(this.exchange?.options?.protectionVisibilityGraceMs) || 15000
+    );
+    if (
+      bracket?.status === 'PROTECTED'
+      && Number.isFinite(bracket.protectionPlacedAt)
+      && Date.now() - bracket.protectionPlacedAt < visibilityGraceMs
+    ) return;
     const task = this._placeBracketProtectionOnce(bracket);
     bracket.protectionPromise = task;
     try {
@@ -1146,6 +1155,7 @@ class CCXTExecutionAdapter extends ExecutionAdapter {
       bracket.slClientAlgoId = slId;
       this._algoClientToBracket.set(slId, bracket.bracketId);
       bracket.status = 'PROTECTED';
+      bracket.protectionPlacedAt = Date.now();
       bracket.lastError = undefined;
       bracket.updatedAt = Date.now();
     } catch (error) {

@@ -182,6 +182,43 @@ async function run() {
   });
   assert.strictEqual(t.cardStates.get(key), 'executing');
 
+  const firstGroup = t.levelOrderGroups.get(parentRequestId);
+  firstGroup.key = 'stale-row-key';
+  t.cardStates.set(key, 'pending-exec');
+  handlers['level-order:positions-ready'](null, {
+    requestId: parentRequestId,
+    symbol: 'TST',
+    expectedQty: 3,
+    foundQty: 3,
+    foundCids: ['cid-1', 'cid-2']
+  });
+  assert.strictEqual(firstGroup.key, key);
+  assert.strictEqual(t.cardStates.get(key), 'executing');
+
+  handlers['execution:result'](null, {
+    reqId: `${parentRequestId}_2`,
+    pendingId: 'cid-2',
+    provider: 'simulated',
+    status: 'ok',
+    providerOrderId: 'ticket-2',
+    parentRequestId,
+    childCount: 2,
+    order: {
+      symbol: 'TST',
+      side: 'buy',
+      qty: 2,
+      meta: { requestId: `${parentRequestId}_2`, parentRequestId, childCount: 2 }
+    }
+  });
+  assert.strictEqual(t.cardStates.get(key), 'executing');
+
+  t.ticketToKey.set('migration-ticket', key);
+  t.migrateKey(key, 'migrated-row-key');
+  assert.strictEqual(firstGroup.key, 'migrated-row-key');
+  assert.strictEqual(t.ticketToKey.get('migration-ticket'), 'migrated-row-key');
+  assert.strictEqual(t.cardStates.get('migrated-row-key'), 'executing');
+  t.migrateKey('migrated-row-key', key);
+
   const updateRow = { cardType: 'levelOrder', ticker: 'TSTUP', event: 'levelOrder', time: 10, level: 100, stopOffsetPts: 4, provider: 'simulated', instrumentType: 'EQ' };
   const updateRow2 = { cardType: 'levelOrder', ticker: 'TSTUP', event: 'levelOrder', time: 11, level: 110, stopOffsetPts: 7, provider: 'simulated', instrumentType: 'EQ' };
   t.instrumentInfo.set('TSTUP', { bid: 101, ask: 102, price: 101.5, tickSize: 0.5 });

@@ -129,6 +129,7 @@ async function testConcurrentProtectionPlacementIsDeduplicated() {
     adapter._placeBracketProtection(bracket),
     adapter._placeBracketProtection(bracket)
   ]);
+  await adapter._placeBracketProtection(bracket);
 
   assert.strictEqual(adapter.requests.length, 1);
   assert.strictEqual(bracket.status, 'PROTECTED');

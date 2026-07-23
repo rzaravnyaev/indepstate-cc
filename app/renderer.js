@@ -1563,6 +1563,14 @@ function migrateKey(oldKey, newKey, {preserveUi = false, nextUiPatch = null} = {
     placedOrderByKey.set(newKey, placedOrderByKey.get(oldKey));
     placedOrderByKey.delete(oldKey);
   }
+
+  for (const group of levelOrderGroups.values()) {
+    if (group.key === oldKey) group.key = newKey;
+  }
+
+  for (const [ticket, key] of ticketToKey.entries()) {
+    if (key === oldKey) ticketToKey.set(ticket, newKey);
+  }
 }
 
 // ======= Rendering =======
@@ -2823,6 +2831,7 @@ function levelOrderAllPlaced(group) {
 
 function levelOrderAllOpened(group) {
   if (!group) return false;
+  if (group.lifecycleReady === true) return true;
   const total = group.total || group.childReqIds.size;
   return total > 0 && group.openedTickets.size >= total;
 }
@@ -3512,9 +3521,17 @@ ipcRenderer.on('position:opened', (_evt, rec) => {
 ipcRenderer.on('level-order:positions-ready', (_evt, rec = {}) => {
   const parentRequestId = rec.parentRequestId || rec.requestId;
   const group = levelOrderGroups.get(parentRequestId);
-  const key = group?.key || pendingByReqId.get(parentRequestId);
+  let key = group?.key || pendingByReqId.get(parentRequestId);
+  if ((!key || !cardByKey(key)) && rec.symbol) {
+    const liveKey = findKeyByTicker(rec.symbol);
+    if (liveKey) {
+      if (group) group.key = liveKey;
+      key = liveKey;
+    }
+  }
   if (!key) return;
   if (group) {
+    group.lifecycleReady = true;
     group.foundQty = Number(rec.foundQty);
     group.expectedQty = Number(rec.expectedQty);
     for (const cid of rec.foundCids || []) levelOrderPendingToGroup.set(String(cid), parentRequestId);
@@ -3670,6 +3687,7 @@ if (typeof module !== 'undefined') {
     placedOrderByKey,
     instrumentInfo,
     settingsForms,
+    migrateKey,
     setLevelOrderConfig(config) {
       levelOrderCfg = config || {};
     },
