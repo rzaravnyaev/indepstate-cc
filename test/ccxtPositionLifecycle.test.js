@@ -152,6 +152,40 @@ function addBracket(adapter, suffix = '1') {
 
   {
     const adapter = makeAdapter();
+    const bracket = addBracket(adapter, '4');
+    bracket.status = 'ENTRY_PLACED';
+    bracket.actualQty = null;
+    bracket.expectedQty = '2';
+    adapter._placeBracketProtection = async () => {
+      bracket.status = 'PROTECTED';
+    };
+    adapter._binanceSignedRequest = async (_method, endpoint, params) => {
+      if (endpoint === '/fapi/v1/order') throw new Error('temporary order lookup failure');
+      if (endpoint === '/fapi/v1/userTrades') {
+        assert.strictEqual(params.orderId, bracket.entryOrderId);
+        return [
+          { orderId: bracket.entryOrderId, qty: '0.75' },
+          { orderId: bracket.entryOrderId, qty: '1.25' },
+          { orderId: 999999, qty: '50' }
+        ];
+      }
+      throw new Error(`unexpected endpoint ${endpoint}`);
+    };
+    const opened = [];
+    adapter.events.on('position:opened', event => opened.push(event));
+
+    await adapter._reconcileBrackets();
+    await adapter._reconcileBrackets();
+
+    assert.strictEqual(opened.length, 1);
+    assert.strictEqual(opened[0].ticket, String(bracket.entryOrderId));
+    assert.strictEqual(opened[0].origOrder, bracket.origOrder);
+    assert.strictEqual(bracket.actualQty, '2');
+    assert.strictEqual(bracket.status, 'PROTECTED');
+  }
+
+  {
+    const adapter = makeAdapter();
     const opened = [];
     const closed = [];
     let positions = [{ symbol: 'ETH/USDT:USDT', contracts: 2, unrealizedPnl: 3 }];

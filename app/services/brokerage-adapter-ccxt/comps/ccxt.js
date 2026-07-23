@@ -1057,7 +1057,7 @@ class CCXTExecutionAdapter extends ExecutionAdapter {
       symbol: mappedSymbol,
       size: Number(bracket.actualQty || entryOrder?.executedQty || entryOrder?.cumQty || bracket.expectedQty || 0),
       bracketId: bracket.bracketId
-    });
+    }, bracket.origOrder);
   }
 
   _rejectBracketPending(bracket, reason, raw = undefined) {
@@ -1157,8 +1157,12 @@ class CCXTExecutionAdapter extends ExecutionAdapter {
     const bracket = this._brackets.get(bracketId);
     const watcher = this._bracketEntryWatchers.get(bracketId);
     if (!bracket || !watcher) return;
-    const timeoutMs = Number(this.exchange?.options?.bracketEntryFillTimeoutMs || 120000);
-    if (Date.now() - watcher.startedAt > timeoutMs) { clearInterval(watcher.timer); this._bracketEntryWatchers.delete(bracketId); return; }
+    const timeoutMs = Number(this.exchange?.options?.bracketEntryFillTimeoutMs || 0);
+    if (Number.isFinite(timeoutMs) && timeoutMs > 0 && Date.now() - watcher.startedAt > timeoutMs) {
+      clearInterval(watcher.timer);
+      this._bracketEntryWatchers.delete(bracketId);
+      return;
+    }
     const o = await this._binanceSignedRequest('GET', '/fapi/v1/order', { symbol: bracket.symbol, origClientOrderId: bracket.entryClientOrderId });
     const st = String(o?.status || '').toUpperCase();
     if (st === 'FILLED') {
@@ -1189,11 +1193,11 @@ class CCXTExecutionAdapter extends ExecutionAdapter {
     return true;
   }
 
-  _emitPositionOpened(ticket, order = {}) {
+  _emitPositionOpened(ticket, order = {}, origOrder = undefined) {
     const normalizedTicket = String(ticket || '').trim();
     if (!normalizedTicket || this._ticketOpened.has(normalizedTicket)) return false;
     this._ticketOpened.add(normalizedTicket);
-    this.events.emit('position:opened', { ticket: normalizedTicket, order });
+    this.events.emit('position:opened', { ticket: normalizedTicket, order, origOrder });
     return true;
   }
 
@@ -2026,7 +2030,47 @@ class CCXTExecutionAdapter extends ExecutionAdapter {
           else if (st === 'PARTIALLY_FILLED') { b.status = 'ENTRY_PARTIALLY_FILLED'; b.actualQty = String(o?.executedQty || o?.cumQty || ''); this._confirmBracketPending(b, o); this._markBracketOpened(b, o); }
           else if (['CANCELED','REJECTED','EXPIRED'].includes(st)) { b.status = 'CANCELED'; this._rejectBracketPending(b, `Entry order finished with status ${st}`, o); }
           b.updatedAt = Date.now();
-        } catch {}
+        } catch (orderError) {
+          try {
+            const trades = await this._binanceSignedRequest('GET', '/fapi/v1/userTrades', {
+              symbol: b.symbol,
+              orderId: b.entryOrderId
+            });
+            const entryTrades = (Array.isArray(trades) ? trades : []).filter((trade) => (
+              String(trade?.orderId || '') === String(b.entryOrderId || '')
+            ));
+            const executedQty = entryTrades.reduce((sum, trade) => {
+              const qty = Number(trade?.qty ?? trade?.quantity ?? 0);
+              return sum + (Number.isFinite(qty) ? Math.abs(qty) : 0);
+            }, 0);
+            if (executedQty > 0) {
+              const expectedQty = Number(b.expectedQty);
+              const fullyFilled = Number.isFinite(expectedQty) && executedQty + 1e-12 >= expectedQty;
+              b.actualQty = String(executedQty);
+              b.status = fullyFilled ? 'ENTRY_FILLED' : 'ENTRY_PARTIALLY_FILLED';
+              b.updatedAt = Date.now();
+              this._confirmBracketPending(b, { orderId: b.entryOrderId, executedQty: b.actualQty });
+              this._markBracketOpened(b, { orderId: b.entryOrderId, executedQty: b.actualQty });
+              if (fullyFilled) {
+                try { await this._placeBracketProtection(b); } catch (error) {
+                  b.status = 'ERROR';
+                  b.lastError = error?.message || String(error);
+                }
+              }
+            }
+          } catch (tradesError) {
+            const now = Date.now();
+            if (!b.lastEntryReconcileWarningAt || now - b.lastEntryReconcileWarningAt >= 60000) {
+              b.lastEntryReconcileWarningAt = now;
+              console.warn(`[${this.provider}] Unable to reconcile Binance bracket entry`, {
+                bracketId: b.bracketId,
+                entryOrderId: b.entryOrderId,
+                orderError: orderError?.message || String(orderError),
+                tradesError: tradesError?.message || String(tradesError)
+              });
+            }
+          }
+        }
         continue;
       }
 
