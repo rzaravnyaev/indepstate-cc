@@ -16,6 +16,7 @@ const { createPendingOrderHub } = require('./services/pendingOrders');
 const tradeRules = servicesApi.tradeRules || require('./services/tradeRules');
 const loadConfig = require('./config/load');
 const orderCalc = servicesApi.orderCalculator || require('./services/orderCalculator');
+const { GroupedOrderLifecycleRegistry } = require('./services/brokerage/comps/groupedOrderLifecycle');
 const { calculateLimitBidTradePlan } = require('./services/levelOrder/strategy');
 const { collectRetryStopEntries, getRetryStopParentIds } = require('./services/levelOrder/retryStop');
 const { normalizeOrderQty, isValidOrderQty } = require('./services/executionQuantity');
@@ -251,33 +252,27 @@ const confirmedOrderByCid = new Map(); // cid/pendingId -> original normalized o
 const trackerPending = new Map(); // reqId -> { ticker, tp, sp }
 const trackerIndex = new Map(); // ticket -> { ticker, tp, sp, cid }
 const levelOrderPositionMonitors = new Map(); // parent requestId -> { timer, children, ... }
-const levelOrderTerminalGroups = new Map(); // parent requestId -> { providerName, symbol, tickets, openedTickets }
+const groupedOrderLifecycles = new GroupedOrderLifecycleRegistry();
 
-function emitLevelOrderPositionsReadyIfComplete(parentRequestId, terminalGroup) {
-  if (!parentRequestId || !terminalGroup || terminalGroup.positionsReadyEmitted) return false;
-  const expectedCount = Number(terminalGroup.expectedCount);
-  if (!Number.isFinite(expectedCount) || expectedCount <= 0) return false;
-  if (terminalGroup.tickets.size < expectedCount || terminalGroup.openedTickets.size < expectedCount) return false;
-
-  terminalGroup.positionsReadyEmitted = true;
-  const expectedQty = Array.from(terminalGroup.qtyByTicket?.values?.() || [])
-    .reduce((sum, qty) => sum + (Number.isFinite(Number(qty)) ? Number(qty) : 0), 0);
+function emitLevelOrderPositionsReadyIfComplete(parentRequestId) {
+  const snapshot = groupedOrderLifecycles.takeReadySnapshot(parentRequestId);
+  if (!snapshot) return false;
   const payload = {
     requestId: parentRequestId,
     parentRequestId,
-    provider: terminalGroup.providerName,
-    symbol: terminalGroup.symbol,
-    expectedQty,
-    foundQty: expectedQty,
-    expectedCids: Array.from(terminalGroup.cids || []),
-    foundCids: Array.from(terminalGroup.cids || [])
+    provider: snapshot.provider,
+    symbol: snapshot.symbol,
+    expectedQty: snapshot.expectedQty,
+    foundQty: snapshot.foundQty,
+    expectedCids: snapshot.cids,
+    foundCids: snapshot.cids
   };
   appendJsonl(EXEC_LOG, { t: nowTs(), kind: 'level-order-positions-ready', source: 'lifecycle', ...payload });
   console.log('[LEVEL][POSITIONS_READY]', {
     requestId: parentRequestId,
-    symbol: terminalGroup.symbol,
-    foundQty: expectedQty,
-    expectedQty,
+    symbol: snapshot.symbol,
+    foundQty: snapshot.foundQty,
+    expectedQty: snapshot.expectedQty,
     source: 'lifecycle'
   });
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -322,30 +317,14 @@ function wireAdapter(adapter, providerName) {
       if (child) child.providerOrderId = normalizedTicket;
     }
     if (parentRequestId && normalizedTicket) {
-      let terminalGroup = levelOrderTerminalGroups.get(parentRequestId);
-      if (!terminalGroup) {
-        terminalGroup = {
-          providerName,
-          symbol: rec.order?.symbol || rec.order?.ticker || '',
-          tickets: new Set(),
-          openedTickets: new Set(),
-          expectedCount: Number(rec.order?.meta?.childCount) || 1,
-          qtyByTicket: new Map(),
-          cids: new Set()
-        };
-        levelOrderTerminalGroups.set(parentRequestId, terminalGroup);
-      }
-      terminalGroup.providerName = providerName;
-      terminalGroup.symbol = terminalGroup.symbol || rec.order?.symbol || rec.order?.ticker || '';
-      terminalGroup.expectedCount = Math.max(
-        Number(terminalGroup.expectedCount) || 0,
-        Number(rec.order?.meta?.childCount) || 1
-      );
-      terminalGroup.tickets.add(normalizedTicket);
-      terminalGroup.qtyByTicket ||= new Map();
-      terminalGroup.qtyByTicket.set(normalizedTicket, Number(rec.order?.qty) || 0);
-      terminalGroup.cids ||= new Set();
-      if (pendingId) terminalGroup.cids.add(String(pendingId));
+      groupedOrderLifecycles.registerTicket(parentRequestId, {
+        provider: providerName,
+        symbol: rec.order?.symbol || rec.order?.ticker || '',
+        expectedCount: rec.order?.meta?.childCount,
+        ticket: normalizedTicket,
+        cid: pendingId,
+        qty: rec.order?.qty
+      });
     }
     if (normalizedTicket) confirmedOrderByTicket.set(normalizedTicket, rec.order);
     if (pendingId) confirmedOrderByCid.set(String(pendingId), rec.order);
@@ -356,7 +335,7 @@ function wireAdapter(adapter, providerName) {
       mainWindow.webContents.send('execution:result', payload);
     }
     if (parentRequestId) {
-      emitLevelOrderPositionsReadyIfComplete(parentRequestId, levelOrderTerminalGroups.get(parentRequestId));
+      emitLevelOrderPositionsReadyIfComplete(parentRequestId);
     }
     const info = trackerPending.get(rec.reqId);
     if (info) {
@@ -414,27 +393,15 @@ function wireAdapter(adapter, providerName) {
       cid: enrichedOrigOrder?.meta?.cid || cid
     });
     if (parentRequestId && normalizedTicket) {
-      let terminalGroup = levelOrderTerminalGroups.get(parentRequestId);
-      if (!terminalGroup) {
-        terminalGroup = {
-          providerName,
-          symbol: enrichedOrigOrder?.symbol || enrichedOrigOrder?.ticker || order?.symbol || '',
-          tickets: new Set(),
-          openedTickets: new Set(),
-          expectedCount: Number(enrichedOrigOrder?.meta?.childCount) || 1,
-          qtyByTicket: new Map(),
-          cids: new Set()
-        };
-        levelOrderTerminalGroups.set(parentRequestId, terminalGroup);
-      }
-      terminalGroup.tickets.add(normalizedTicket);
-      terminalGroup.openedTickets.add(normalizedTicket);
-      terminalGroup.qtyByTicket ||= new Map();
-      terminalGroup.qtyByTicket.set(normalizedTicket, Number(enrichedOrigOrder?.qty ?? order?.size) || 0);
-      terminalGroup.cids ||= new Set();
-      const lifecycleCid = enrichedOrigOrder?.meta?.cid;
-      if (lifecycleCid) terminalGroup.cids.add(String(lifecycleCid));
-      emitLevelOrderPositionsReadyIfComplete(parentRequestId, terminalGroup);
+      groupedOrderLifecycles.markOpened(parentRequestId, {
+        provider: providerName,
+        symbol: enrichedOrigOrder?.symbol || enrichedOrigOrder?.ticker || order?.symbol || '',
+        expectedCount: enrichedOrigOrder?.meta?.childCount,
+        ticket: normalizedTicket,
+        cid: enrichedOrigOrder?.meta?.cid,
+        qty: enrichedOrigOrder?.qty ?? order?.size
+      });
+      emitLevelOrderPositionsReadyIfComplete(parentRequestId);
     }
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('position:opened', { ticket, order, origOrder: enrichedOrigOrder, provider: providerName });
@@ -456,11 +423,7 @@ function wireAdapter(adapter, providerName) {
   adapter.on('order:cancelled', ({ ticket }) => {
     events.emit('order:cancelled', { ticket, provider: providerName });
     trackerIndex.delete(String(ticket));
-    for (const [parentRequestId, terminalGroup] of levelOrderTerminalGroups.entries()) {
-      terminalGroup.tickets.delete(String(ticket));
-      terminalGroup.openedTickets.delete(String(ticket));
-      if (terminalGroup.tickets.size === 0) levelOrderTerminalGroups.delete(parentRequestId);
-    }
+    groupedOrderLifecycles.removeTicket(ticket, providerName);
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('order:cancelled', { ticket, provider: providerName });
     }
@@ -780,25 +743,24 @@ function stopLevelOrderPositionMonitor(requestId) {
   levelOrderPositionMonitors.delete(requestId);
 }
 
-async function cancelLevelOrderTerminalOrders(parentRequestId) {
-  const terminalGroup = levelOrderTerminalGroups.get(parentRequestId);
-  if (!terminalGroup) return { cancelled: 0, errors: [] };
-  const adapter = getAdapter(terminalGroup.providerName);
-  wireAdapter(adapter, terminalGroup.providerName);
+async function cancelGroupedOrderUnopenedTickets(groupId) {
+  const group = groupedOrderLifecycles.get(groupId);
+  if (!group) return { cancelled: 0, errors: [] };
+  const adapter = getAdapter(group.provider);
+  wireAdapter(adapter, group.provider);
   const errors = [];
   let cancelled = 0;
-  for (const ticket of Array.from(terminalGroup.tickets)) {
-    if (terminalGroup.openedTickets.has(ticket)) continue;
+  for (const ticket of groupedOrderLifecycles.getUnopenedTickets(groupId)) {
     try {
-      const result = await adapter.cancelOrder(ticket, terminalGroup.symbol);
+      const result = await adapter.cancelOrder(ticket, group.symbol);
       cancelled += 1;
       appendJsonl(EXEC_LOG, {
         t: nowTs(),
         kind: 'level-order-cancel-terminal',
-        parentRequestId,
-        provider: terminalGroup.providerName,
+        parentRequestId: groupId,
+        provider: group.provider,
         ticket,
-        symbol: terminalGroup.symbol,
+        symbol: group.symbol,
         result
       });
     } catch (err) {
@@ -807,10 +769,10 @@ async function cancelLevelOrderTerminalOrders(parentRequestId) {
       appendJsonl(EXEC_LOG, {
         t: nowTs(),
         kind: 'level-order-cancel-terminal',
-        parentRequestId,
-        provider: terminalGroup.providerName,
+        parentRequestId: groupId,
+        provider: group.provider,
         ticket,
-        symbol: terminalGroup.symbol,
+        symbol: group.symbol,
         error: reason
       });
     }
@@ -1279,7 +1241,7 @@ function setupIpc(orderSvc) {
 
     for (const parentId of parentIds) {
       stopLevelOrderPositionMonitor(parentId);
-      const terminalResult = await cancelLevelOrderTerminalOrders(parentId);
+      const terminalResult = await cancelGroupedOrderUnopenedTickets(parentId);
       terminalCancelled += terminalResult.cancelled;
       terminalErrors.push(...terminalResult.errors);
     }
