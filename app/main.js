@@ -1021,7 +1021,10 @@ function setupIpc(orderSvc) {
       }
       trackerPending.delete(reqId);
 
-      events.emit('order:placed', { order: execOrder, result: { status: result?.status || 'rejected', provider: execRecord.provider, providerOrderId: result?.providerOrderId, reason: result?.reason, cid } });
+      const lifecycleResult = result?.status === 'ok'
+        ? { ...result, provider: execRecord.provider, cid }
+        : { status: result?.status || 'rejected', provider: execRecord.provider, providerOrderId: result?.providerOrderId, reason: result?.reason, cid };
+      events.emit('order:placed', { order: execOrder, result: lifecycleResult });
 
       console.log('[EXEC][RES]', { reqId, cid, status: result?.status, reason: result?.reason, providerOrderId: result?.providerOrderId });
       return result;
@@ -1218,9 +1221,11 @@ function setupIpc(orderSvc) {
     const providerNameRaw = payload.provider;
     const ticketRaw = payload.ticket;
     const symbolRaw = payload.symbol;
+    const nameRaw = payload.name || payload.order?.name;
     const providerName = typeof providerNameRaw === 'string' ? providerNameRaw : String(providerNameRaw || '');
     const ticket = typeof ticketRaw === 'string' ? ticketRaw : String(ticketRaw || '');
     const symbol = typeof symbolRaw === 'string' ? symbolRaw : (symbolRaw == null ? undefined : String(symbolRaw));
+    const name = typeof nameRaw === 'string' ? nameRaw : (nameRaw == null ? undefined : String(nameRaw));
 
     if (!providerName || !ticket) {
       return { status: 'error', reason: 'provider and ticket required' };
@@ -1236,7 +1241,18 @@ function setupIpc(orderSvc) {
       }
       const result = await adapter.cancelOrder(ticket, symbol);
       appendJsonl(EXEC_LOG, { t: nowTs(), kind: 'cancel', provider: providerName, ticket, symbol, result });
-      return result || { status: 'ok', provider: providerName };
+      const res = result || { status: 'ok', provider: providerName };
+      const isOptionStratClose = String(providerName || '').toLowerCase() === 'optionstrat' || !!res?.raw?.strategy;
+      if (res.status === 'ok' && isOptionStratClose) {
+        events.emit('order:closed', {
+          provider: providerName,
+          ticket,
+          symbol,
+          order: name ? { name } : undefined,
+          result: { ...res, provider: res.provider || providerName }
+        });
+      }
+      return res;
     } catch (err) {
       const reason = err?.message || String(err || '');
       appendJsonl(EXEC_LOG, { t: nowTs(), kind: 'cancel', provider: providerName, ticket, symbol, error: reason });

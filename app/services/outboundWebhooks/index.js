@@ -3,6 +3,7 @@ const fetch = require('node-fetch');
 const SENSITIVE_KEY_RE = /(?:authorization|token|secret|password|credential|key)$/i;
 const ENV_REF_RE = /\$\{?ENV:([A-Z0-9_]+)\}?/gi;
 const PLACEHOLDER_RE = /\{([^{}\s]+)\}/g;
+const PAYLOAD_MAPPING_RE = /^([A-Za-z_][A-Za-z0-9_]*):([A-Za-z_][A-Za-z0-9_.[\]]*)$/;
 
 function parsePropsToken(token) {
   const raw = String(token || '');
@@ -28,6 +29,7 @@ function parseWebhookCommandArgs(args) {
   const [target, ...rest] = list;
   if (!target) return { ok: false, error: 'Usage: wh <target-or-group> [text...] [props=key:value;key2:value2]' };
   const textParts = [];
+  const mappings = {};
   let props = {};
   for (let i = 0; i < rest.length; i += 1) {
     const token = rest[i];
@@ -39,13 +41,20 @@ function parseWebhookCommandArgs(args) {
       props = { ...props, ...parsed.props };
       if (propsStartsHere) break;
     } else {
-      textParts.push(token);
+      const mapping = token.match(PAYLOAD_MAPPING_RE);
+      if (mapping) {
+        mappings[mapping[1]] = mapping[2];
+      } else {
+        textParts.push(token);
+      }
     }
   }
   const payload = { ...props };
   const text = textParts.join(' ').trim();
   if (text) payload.text = text;
-  return { ok: true, target, payload };
+  const out = { ok: true, target, payload };
+  if (Object.keys(mappings).length) out.mappings = mappings;
+  return out;
 }
 
 function getProp(payload, key) {
@@ -74,6 +83,28 @@ function getPathValue(obj, path) {
     cur = cur[part];
   }
   return cur;
+}
+
+function applyPayloadMappings(payload, mappings, eventPayload) {
+  const out = payload && typeof payload === 'object' ? { ...payload } : {};
+  if (!mappings || typeof mappings !== 'object' || !eventPayload || typeof eventPayload !== 'object') return out;
+  for (const [targetKey, sourcePath] of Object.entries(mappings)) {
+    const value = getPathValue(eventPayload, sourcePath);
+    if (value != null && value !== '') out[targetKey] = value;
+  }
+  return out;
+}
+
+function applyRenderedBodyMappings(body, payload, mappedKeys) {
+  if (!body || typeof body !== 'object' || Array.isArray(body) || Buffer.isBuffer(body)) return body;
+  if (!Array.isArray(mappedKeys) || !mappedKeys.length || !payload || typeof payload !== 'object') return body;
+  const out = { ...body };
+  for (const key of mappedKeys) {
+    if (Object.prototype.hasOwnProperty.call(out, key) && payload[key] != null && payload[key] !== '') {
+      out[key] = payload[key];
+    }
+  }
+  return out;
 }
 
 function renderTemplate(value, payload) {
@@ -250,7 +281,10 @@ class OutboundWebhooksService {
     }
 
     const resolvedTarget = envResolved.value;
-    const templatePayload = opts.templatePayload && typeof opts.templatePayload === 'object' ? opts.templatePayload : payload;
+    const templatePayload = {
+      ...(opts.templatePayload && typeof opts.templatePayload === 'object' ? opts.templatePayload : {}),
+      ...(payload && typeof payload === 'object' ? payload : {})
+    };
     const dedupeRendered = resolvedTarget.dedupeKey ? renderTemplate(resolvedTarget.dedupeKey, templatePayload) : '';
     const dedupeKey = dedupeRendered ? `${targetName}:${dedupeRendered}` : '';
     if (dedupeKey && this.dedupe.has(dedupeKey)) {
@@ -261,7 +295,11 @@ class OutboundWebhooksService {
     const method = String(resolvedTarget.method || 'POST').toUpperCase();
     const headers = { ...(resolvedTarget.headers || {}) };
     const bodyTemplate = resolvedTarget.body == null ? payload : resolvedTarget.body;
-    const renderedBody = renderTemplate(bodyTemplate, templatePayload);
+    const renderedBody = applyRenderedBodyMappings(
+      renderTemplate(bodyTemplate, templatePayload),
+      payload,
+      opts.mappedKeys
+    );
     const isJsonBody = renderedBody && typeof renderedBody === 'object' && !Buffer.isBuffer(renderedBody);
     if (isJsonBody && !Object.keys(headers).some(k => k.toLowerCase() === 'content-type')) {
       headers['Content-Type'] = 'application/json';
@@ -348,11 +386,13 @@ class OutboundWebhooksService {
     }
     const parsed = parseWebhookCommandArgs(args);
     if (!parsed.ok) return parsed;
+    const mappedPayload = applyPayloadMappings(parsed.payload, parsed.mappings, eventPayload);
+    const mappedKeys = parsed.mappings ? Object.keys(parsed.mappings) : [];
     const templatePayload = {
       ...(eventPayload && typeof eventPayload === 'object' ? eventPayload : {}),
-      ...parsed.payload
+      ...mappedPayload
     };
-    return this.send(parsed.target, parsed.payload, { templatePayload });
+    return this.send(parsed.target, mappedPayload, { templatePayload, mappedKeys });
   }
 }
 
@@ -365,6 +405,8 @@ module.exports = {
   createOutboundWebhooksService,
   parseWebhookCommandArgs,
   parsePropsToken,
+  applyPayloadMappings,
+  applyRenderedBodyMappings,
   renderTemplate,
   resolveEnvRefs,
   redact,

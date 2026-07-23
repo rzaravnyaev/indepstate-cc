@@ -2,6 +2,7 @@ const assert = require('assert');
 const {
   createOutboundWebhooksService,
   parseWebhookCommandArgs,
+  applyRenderedBodyMappings,
   renderTemplate,
   resolveEnvRefs
 } = require('../app/services/outboundWebhooks');
@@ -78,6 +79,32 @@ async function run() {
     }
   });
 
+  assert.deepStrictEqual(parseWebhookCommandArgs([
+    'is-signal-relay',
+    'legs:optionCloseLegsText',
+    'price:optionCloseNetPrice'
+  ]), {
+    ok: true,
+    target: 'is-signal-relay',
+    payload: {},
+    mappings: {
+      legs: 'optionCloseLegsText',
+      price: 'optionCloseNetPrice'
+    }
+  });
+  assert.deepStrictEqual(applyRenderedBodyMappings({
+    legs: '+1C7500/-1C7515',
+    price: '0',
+    symbol: 'SPXW'
+  }, {
+    legs: '+1C7500@7.60/-1C7515@3.85',
+    price: 3.75
+  }, ['legs', 'price']), {
+    legs: '+1C7500@7.60/-1C7515@3.85',
+    price: 3.75,
+    symbol: 'SPXW'
+  });
+
   assert.deepStrictEqual(enrichLifecyclePayload('order:placed', {
     order: {
       symbol: 'SPXW',
@@ -115,6 +142,92 @@ async function run() {
     },
     result: { cid: 'cid-1' }
   });
+
+  assert.deepStrictEqual(enrichLifecyclePayload('order:placed', {
+    order: {
+      symbol: 'SPXW',
+      name: 'BCS 7500/7510'
+    },
+    result: {
+      status: 'ok',
+      provider: 'optionstrat',
+      providerOrderId: 'deal-1',
+      raw: {
+        strategy: {
+          items: [
+            { symbol: '.SPXW260531C7500', basis: 1.2, quantity: 1 },
+            { symbol: '.SPXW260531C7510', basis: 0.45, quantity: -1 }
+          ]
+        }
+      }
+    }
+  }).optionOpenLegs, [
+    { symbol: '.SPXW260531C7500', option: 'CALL', strike: 7500, quantity: 1, basis: 1.2 },
+    { symbol: '.SPXW260531C7510', option: 'CALL', strike: 7510, quantity: -1, basis: 0.45 }
+  ]);
+  const enrichedOpen = enrichLifecyclePayload('order:placed', {
+    order: { symbol: 'SPXW', name: 'BCS 7500/7510' },
+    result: {
+      status: 'ok',
+      provider: 'optionstrat',
+      raw: {
+        strategy: {
+          items: [
+            { symbol: '.SPXW260531C7500', basis: 1.2, quantity: 1 },
+            { symbol: '.SPXW260531C7510', basis: 0.45, quantity: -1 }
+          ]
+        }
+      }
+    }
+  });
+  assert.strictEqual(enrichedOpen.optionOpenLegsText, '+1C7500@1.20/-1C7510@0.45');
+  assert.strictEqual(enrichedOpen.optionOpenNetPrice, 0.75);
+
+  const enrichedClose = enrichLifecyclePayload('order:closed', {
+    provider: 'optionstrat',
+    ticket: 'deal-1',
+    symbol: 'SPXW',
+    order: { name: 'BCS 7500/7510' },
+    result: {
+      status: 'ok',
+      provider: 'optionstrat',
+      valuation: {
+        change: 600,
+        legs: [
+          { symbol: '.SPXW260531C7500', basis: 1.2, current: 1.75, quantity: 1 },
+          { symbol: '.SPXW260531C7510', basis: 0.45, current: 0.3, quantity: -1 }
+        ]
+      },
+      raw: {
+        strategy: {
+          items: [
+            { symbol: '.SPXW260531C7500', basis: 1.2, close: 1.75, quantity: 1 },
+            { symbol: '.SPXW260531C7510', basis: 0.45, close: 0.3, quantity: -1 }
+          ]
+        }
+      }
+    }
+  });
+  assert.deepStrictEqual(enrichedClose.optionCloseLegs, [
+    { symbol: '.SPXW260531C7500', option: 'CALL', strike: 7500, quantity: 1, basis: 1.2, current: 1.75, close: 1.75 },
+    { symbol: '.SPXW260531C7510', option: 'CALL', strike: 7510, quantity: -1, basis: 0.45, current: 0.3, close: 0.3 }
+  ]);
+  assert.strictEqual(enrichedClose.optionCloseLegsText, '+1C7500@1.75/-1C7510@0.30');
+  assert.strictEqual(enrichedClose.optionCloseNetPrice, 1.45);
+  assert.strictEqual(enrichedClose.optionPnl, 600);
+  assert.strictEqual(renderTemplate('{order.name} closed {optionCloseLegsText}', enrichedClose), 'BCS 7500/7510 closed +1C7500@1.75/-1C7510@0.30');
+
+  const rejectedOpen = enrichLifecyclePayload('order:placed', {
+    order: { symbol: 'SPXW' },
+    result: { status: 'rejected', provider: 'optionstrat', reason: 'no account' }
+  });
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(rejectedOpen, 'optionOpenLegsText'), false);
+  const rejectedClose = enrichLifecyclePayload('order:closed', {
+    provider: 'optionstrat',
+    ticket: 'deal-1',
+    result: { status: 'error', provider: 'optionstrat', reason: 'missing strategy' }
+  });
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(rejectedClose, 'optionCloseLegsText'), false);
 
   const requests = [];
   const sleeps = [];
@@ -245,6 +358,95 @@ async function run() {
   const actionReq = requests[requests.length - 1];
   assert.strictEqual(JSON.parse(actionReq.opts.body).event, 'order_submitted');
   assert.strictEqual(JSON.parse(actionReq.opts.body).symbol, 'NDX');
+
+  res = await service.runAction('send relay legs:optionCloseLegsText price:optionCloseNetPrice props=event:order_closed;cardId:c5', null, {
+    symbol: 'SPXW',
+    legs: '+1C7500/-1C7510',
+    optionCloseLegsText: '+1C7500@1.75/-1C7510@0.30',
+    optionCloseNetPrice: 1.45
+  });
+  assert.strictEqual(res.ok, true);
+  const mappedReq = requests[requests.length - 1];
+  const mappedBody = JSON.parse(mappedReq.opts.body);
+  assert.strictEqual(mappedBody.legs, '+1C7500@1.75/-1C7510@0.30');
+  assert.strictEqual(mappedBody.price, 1.45);
+
+  res = await service.send('relay', {
+    event: 'order_placed',
+    cardId: 'c5-direct',
+    legs: '+1C7500@1.75/-1C7510@0.30',
+    price: 1.45
+  }, {
+    templatePayload: {
+      event: 'order_placed',
+      cardId: 'c5-direct',
+      symbol: 'SPXW',
+      legs: '+1C7500/-1C7510',
+      price: 0
+    }
+  });
+  assert.strictEqual(res.ok, true);
+  const directMappedReq = requests[requests.length - 1];
+  const directMappedBody = JSON.parse(directMappedReq.opts.body);
+  assert.strictEqual(directMappedBody.legs, '+1C7500@1.75/-1C7510@0.30');
+  assert.strictEqual(directMappedBody.price, '1.45');
+
+  const relayDryLines = [];
+  const relayDryRunService = createOutboundWebhooksService({
+    enabled: true,
+    trace: { enabled: true, includePayload: true, includeBody: true },
+    targets: {
+      'is-signal-relay': {
+        enabled: true,
+        dryRun: true,
+        url: 'https://example.test/signal',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: {
+          event: '{event}',
+          cardId: '{cardId}',
+          symbol: '{symbol}',
+          legs: '{legs}',
+          qty: '{qty}',
+          price: '{price}',
+          ts: '{ts}'
+        }
+      }
+    }
+  }, {
+    now: () => '2026-07-23T10:01:03.475Z',
+    logger: {
+      info(...args) { relayDryLines.push(args); },
+      error() {}
+    }
+  });
+  res = await relayDryRunService.runAction('send is-signal-relay legs:optionOpenLegsText price:optionOpenNetPrice', null, {
+    event: 'order:placed',
+    cardId: '9b03093f09ee',
+    symbol: 'SPXW',
+    legs: '+1C7500/-1C7515',
+    qty: 1,
+    price: 0,
+    optionOpenLegsText: '+1C7500@7.60/-1C7515@3.85',
+    optionOpenNetPrice: 3.75
+  });
+  assert.strictEqual(res.ok, true);
+  const dryRunTrace = relayDryLines.find(args => args[1] === 'target.dry-run');
+  assert.ok(dryRunTrace);
+  assert.deepStrictEqual(dryRunTrace[2].payload, {
+    legs: '+1C7500@7.60/-1C7515@3.85',
+    price: 3.75
+  });
+  assert.strictEqual(dryRunTrace[2].body.legs, '+1C7500@7.60/-1C7515@3.85');
+  assert.strictEqual(dryRunTrace[2].body.price, 3.75);
+
+  res = await service.runAction('send relay legs:optionMissing props=event:order_closed;cardId:c6', null, {
+    symbol: 'SPXW',
+    legs: '+1C7500/-1C7510'
+  });
+  assert.strictEqual(res.ok, true);
+  const fallbackReq = requests[requests.length - 1];
+  assert.strictEqual(JSON.parse(fallbackReq.opts.body).legs, '+1C7500/-1C7510');
 
   res = await service.runAction('send passthrough props=event:order_cancelled;cardId:c4', null, {
     symbol: 'SHOULD_NOT_BE_SENT',
