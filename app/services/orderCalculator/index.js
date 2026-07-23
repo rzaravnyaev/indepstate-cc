@@ -6,6 +6,11 @@ class OrderCalculator {
     this.tradeRules = tradeRules;
   }
 
+  configure(config = {}) {
+    this.config = config && typeof config === 'object' ? JSON.parse(JSON.stringify(config)) : {};
+    return this;
+  }
+
   _loadDefaultConfig() {
     try {
       return loadConfig('../services/orderCalculator/config/order-calculator.json');
@@ -16,7 +21,7 @@ class OrderCalculator {
 
   // Calculate stop loss points from entry and stop prices
   stopPts({ tickSize, symbol, entryPrice, stopPrice, instrumentType }) {
-    const { toPoints } = require('../points');
+    const { toPoints } = require('../instrumentInfo/points');
     let pts = toPoints(tickSize, symbol, Math.abs(entryPrice - stopPrice), entryPrice);
 
     const tr = this.tradeRules;

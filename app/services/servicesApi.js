@@ -15,6 +15,7 @@
  * @property {(context:any,options?:any) => number} resolveTickSize
  * @property {(context:any,options?:any) => {tickSize:number,source:string}} getTickSizeResolution
  * @property {(context:any,deltaPrice:number,options?:any) => number|undefined} toPoints
+ * @property {(name:string,callback:Function) => Function|null} registerMetadataPrewarmer
  * @property {(eventName:'updated',handler:Function) => Function} on
  */
 
@@ -59,7 +60,7 @@
  * @property {McpApi} [mcp]
  * @property {AutoUpdaterApi} [autoUpdater]
  * @property {import('./tradeRules')} [tradeRules]
- * @property {{listConfigs:Function,readConfig:Function,writeConfig:Function}} [settings]
+ * @property {{listConfigs:Function,readConfig:Function,writeConfig:Function,saveAndApplyConfig:Function,getRestartStatus:Function,onApply:Function}} [settings]
  */
 
 module.exports = { commands: [] };

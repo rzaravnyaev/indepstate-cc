@@ -32,9 +32,9 @@ Metadata fields other than the effective `tickSize` are optional. Raw provider r
 of the public snapshot. Quotes are fresh for one second by default; metadata is fresh for five minutes.
 Concurrent requests for one provider/symbol are coalesced.
 
-At main-process startup, Binance USD-M providers selected by the CX execution route are created in
-the background and their public futures `exchangeInfo` batch is preloaded. Startup does not wait for
-the request. Live quotes are never preloaded.
+At main-process startup, the CCXT service registers a Binance futures metadata prewarmer. It owns the
+Binance and CX routing checks and injects the resulting callback through the generic instrument-info
+prewarmer API. Startup does not wait for metadata and live quotes are never preloaded.
 
 ## API
 
@@ -46,10 +46,16 @@ the request. Live quotes are never preloaded.
 - `resolveTickSize(context, { explicitTickSize })` applies the common precedence policy.
 - `getTickSizeResolution(...)` also returns the selected source.
 - `toPoints(context, deltaPrice, options)` converts through that resolved tick size.
+- `registerMetadataPrewarmer(name, callback)` schedules one named adapter-owned metadata prewarmer;
+  duplicate names are ignored and failures are reported through the service error handler.
 - `on('updated', handler)` subscribes to changed snapshots.
 
 Tick-size precedence is: explicit request value, provider metadata, symbol/pattern configuration,
 then the configured global default. Explicit values are never stored in the shared cache.
+
+Tick-size defaults and symbol/pattern overrides live in
+`app/services/instrumentInfo/config/tick-sizes.json`. A user override named `config/tick-sizes.json`
+continues to merge onto those defaults and can be applied live through the `tick-sizes` setting.
 
 ## Adapter support
 

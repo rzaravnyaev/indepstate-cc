@@ -1,8 +1,10 @@
 const assert = require('assert');
+const brokerageAdapters = require('../app/services/brokerage/brokerageAdapters');
 const {
+  initService,
   findConfiguredMetadataPreloadProviders,
   prewarmConfiguredInstrumentMetadata
-} = require('../app/services/instrumentInfo/manifest');
+} = require('../app/services/brokerage-adapter-ccxt/manifest');
 
 function brokerageFor(config, calls = []) {
   return {
@@ -31,12 +33,7 @@ function run() {
   const calls = [];
   const brokerage = brokerageFor(config, calls);
   assert.deepStrictEqual(findConfiguredMetadataPreloadProviders(brokerage), ['binance-main', 'binance-alt']);
-
-  let scheduled;
-  const selected = prewarmConfiguredInstrumentMetadata(brokerage, { schedule(fn) { scheduled = fn; } });
-  assert.deepStrictEqual(selected, ['binance-main', 'binance-alt']);
-  assert.deepStrictEqual(calls, []);
-  scheduled();
+  assert.deepStrictEqual(prewarmConfiguredInstrumentMetadata(brokerage), ['binance-main', 'binance-alt']);
   assert.deepStrictEqual(calls, ['binance-main', 'binance-alt']);
 
   const fallback = brokerageFor({
@@ -53,7 +50,20 @@ function run() {
   });
   assert.deepStrictEqual(findConfiguredMetadataPreloadProviders(nonBinance), []);
 
-  console.log('instrument info prewarm tests passed');
+  let registration;
+  initService({
+    brokerage,
+    instrumentInfo: {
+      registerMetadataPrewarmer(name, callback) { registration = { name, callback }; }
+    }
+  });
+  assert.strictEqual(typeof brokerageAdapters.ccxt, 'function');
+  assert.strictEqual(registration.name, 'ccxt-binance-futures');
+  calls.length = 0;
+  registration.callback();
+  assert.deepStrictEqual(calls, ['binance-main', 'binance-alt']);
+
+  console.log('CCXT metadata prewarm tests passed');
 }
 
 run();

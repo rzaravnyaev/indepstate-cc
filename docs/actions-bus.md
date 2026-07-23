@@ -9,6 +9,31 @@ with a `name` exposes a checkbox that enables or disables the action at runtime.
 
 ## Configuration
 
+Open **Settings > Actions bus** to edit this configuration. The section opens in the structured
+**Form** view; select **Actions JSON** to edit or replace only the `actions` array as strict JSON.
+The bus-level `enabled` option remains in the Form view and is preserved when editing actions as JSON.
+Switching between the views preserves unsaved changes.
+
+Use **Add action JSON** to append a copied action object or an array of action objects without
+replacing the existing actions. Invalid JSON and non-action snippet values are shown inline and are
+not saved. Saving through Settings updates future actions and refreshes the toolbar toggles
+immediately.
+
+For example, the Actions JSON editor accepts:
+
+```json
+[
+  {
+    "event": "order:placed",
+    "action": "commandLine:notify order {id}",
+    "name": "Notify on new orders"
+  }
+]
+```
+
+Edits made directly to an Actions bus override JSON file are only loaded during application startup
+and therefore require a restart.
+
 ```json
 {
   "enabled": true,
@@ -51,8 +76,8 @@ Objects are stringified and missing values resolve to empty strings.
   - `bindings` (optional) – array of `{ event, action }` objects. Each binding inherits the parent's
     `name`, `label`, and `enabled` default and runs only when the toggle is enabled.
 
-The configuration order determines the toggle order in the UI. Removing an action from the config also
-removes its toggle on the next reload.
+The configuration order determines the toggle order in the UI. Removing an action through Settings
+also removes its toggle after the settings are saved.
 
 ## Function expressions
 
@@ -65,13 +90,14 @@ Command templates can call small registered helper functions:
 }
 ```
 
-Function arguments are resolved from payload placeholders before invocation. The built-in
-`stripSymbol(value)` helper trims a TradingView-style symbol and removes the exchange prefix before
-`:`, so `NYSE:AAA` becomes `AAA`; symbols without a prefix pass through unchanged. The built-in
-`add(a, b, ...)` helper converts arguments to numbers and returns a precision-stable sum. The built-in
-`dist(a, b)` helper converts both arguments to numbers and returns their absolute price difference.
-`distPts(a, b)` converts that absolute price difference to points using the points/tick-size service and
-the action payload symbol, which is useful for templates such as `stopOffsetPts:distPts({price},{rayPrice})`.
+Function arguments are resolved from payload placeholders before invocation. The actions bus provides
+only the generic `add(a, b, ...)` and `dist(a, b)` helpers itself. Other services register the helpers
+that describe their payloads or capabilities: TradingView registers `stripSymbol(value)`, instrument
+information registers `distPts(a, b)` and `distPtsPlus(a, b, extra)`, and OptionStrat registers
+`optionLegs(legs)` and `optionLegPair(legs)`. `stripSymbol` removes an exchange prefix before `:`, so
+`NYSE:AAA` becomes `AAA`; symbols without a prefix pass through unchanged. `distPts(a, b)` converts
+the absolute price difference through the instrument-information tick size and action payload symbol,
+which is useful for templates such as `stopOffsetPts:distPts({price},{rayPrice})`.
 `distPtsPlus(a, b, extra)` does the same conversion and adds an extra point value in one direct helper
 call, avoiding unsupported nested expressions.
 
@@ -86,7 +112,7 @@ The expression layer is intentionally small: it supports direct calls such as
 support nested function calls. Unknown functions render as an empty string and are reported through
 the actions bus error handler without stopping other actions.
 
-Services can extend the registry during `initService`:
+Services extend the registry from their manifests during `initService`:
 
 ```js
 servicesApi.actionBus.registerActionFunction('myHelper', (value, payload, entry) => {

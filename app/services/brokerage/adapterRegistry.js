@@ -25,6 +25,35 @@ function initExecutionConfig(cfg){
   instances.clear();
 }
 
+function updateExecutionRouting(cfg = {}, paths = []) {
+  const current = getExecutionConfig();
+  const providers = current.providers || {};
+  const next = deepClone(current);
+  const unavailablePaths = [];
+  const available = value => {
+    const name = String(value || '').trim().toLowerCase();
+    return !name || !!providers[name];
+  };
+  for (const pathName of paths) {
+    const parts = pathName.split('.');
+    let value = cfg;
+    for (const part of parts) value = value == null ? undefined : value[part];
+    if (value !== undefined && !available(value)) {
+      unavailablePaths.push(pathName);
+      continue;
+    }
+    let target = next;
+    for (let i = 0; i < parts.length - 1; i += 1) {
+      target[parts[i]] = target[parts[i]] && typeof target[parts[i]] === 'object' ? target[parts[i]] : {};
+      target = target[parts[i]];
+    }
+    if (value === undefined) delete target[parts[parts.length - 1]];
+    else target[parts[parts.length - 1]] = deepClone(value);
+  }
+  executionConfig = next;
+  return unavailablePaths;
+}
+
 function getExecutionConfig(){
   if (!executionConfig) executionConfig = loadExecutionConfigFromDisk();
   return executionConfig;
@@ -90,4 +119,4 @@ function getProviderConfig(name){
   return (cfg.providers && cfg.providers[name]) || {};
 }
 
-module.exports = { getAdapter, initExecutionConfig, getExecutionConfig, getProviderConfig };
+module.exports = { getAdapter, initExecutionConfig, updateExecutionRouting, getExecutionConfig, getProviderConfig };

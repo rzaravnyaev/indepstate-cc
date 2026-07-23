@@ -1,5 +1,4 @@
 const { EventEmitter } = require('events');
-const points = require('../points');
 
 const DEFAULT_RUNNER_KEY = '__default__';
 const ACTION_FUNCTION_PATTERN = /\b([A-Za-z_][A-Za-z0-9_]*)\(([^()]*)\)/g;
@@ -31,13 +30,6 @@ function getPathValue(obj, path) {
     cur = cur[part];
   }
   return cur;
-}
-
-function stripSymbol(value) {
-  const raw = String(value ?? '').trim();
-  if (!raw) return '';
-  const colonIndex = raw.indexOf(':');
-  return colonIndex >= 0 ? raw.slice(colonIndex + 1).trim() : raw;
 }
 
 // Keep dist() stable for decimal prices: Math.abs(1.5 - 1.35) would otherwise
@@ -82,63 +74,6 @@ function dist(a, b) {
   return Math.abs(Math.round(left * factor) - Math.round(right * factor)) / factor;
 }
 
-function distPts(a, b, payload = {}) {
-  const gap = dist(a, b);
-  if (gap === '') return '';
-  const symbol = stripSymbol(payload?.symbol);
-  const pts = points.toPoints(null, symbol, gap, undefined, String(gap));
-  return Number.isFinite(pts) ? pts : '';
-}
-
-function distPtsPlus(a, b, extra, payload = {}) {
-  if (hasInvalidNumericArg([extra])) return '';
-  const rawPts = distPts(a, b, payload);
-  if (rawPts === '') return '';
-  const pts = Number(rawPts);
-  const extraPts = Number(extra);
-  if (!Number.isFinite(pts) || !Number.isFinite(extraPts)) return '';
-  return add(pts, extraPts);
-}
-
-function parseMaybeJson(value) {
-  if (typeof value !== 'string') return value;
-  const trimmed = value.trim();
-  if (!trimmed || !/^[\[{]/.test(trimmed)) return value;
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    return value;
-  }
-}
-
-function signedOptionLegQty(leg) {
-  const qty = Math.abs(Number(leg?.quantity ?? leg?.qty ?? 0));
-  const side = String(leg?.side || '').toLowerCase();
-  if (!Number.isFinite(qty) || qty <= 0) return 0;
-  return side === 'sell' || side === 'short' ? -qty : qty;
-}
-
-function optionLegToken(leg) {
-  if (!leg || typeof leg !== 'object') return '';
-  const qty = signedOptionLegQty(leg);
-  if (!qty) return '';
-  const optionCode = String(leg.option || '').toUpperCase().startsWith('P') ? 'P' : 'C';
-  const strike = leg.strike ?? leg.price ?? '';
-  return `${qty > 0 ? '+' : '-'}${Math.abs(qty)}${optionCode}${strike}`;
-}
-
-function optionLegs(legs) {
-  const list = parseMaybeJson(legs);
-  if (!Array.isArray(list)) return '';
-  return list.map(optionLegToken).filter(Boolean).join('/');
-}
-
-function optionLegPair(legs) {
-  const list = parseMaybeJson(legs);
-  if (!Array.isArray(list)) return '';
-  return list.map(leg => leg && typeof leg === 'object' ? leg.strike ?? leg.price ?? '' : '').filter(v => v !== '').join('/');
-}
-
 function createActionsBus(opts = {}) {
   const emitter = new EventEmitter();
   const namedStates = new Map(); // name -> { enabled, label }
@@ -158,62 +93,8 @@ function createActionsBus(opts = {}) {
     commandRunners.set(DEFAULT_RUNNER_KEY, opts.commandRunner);
   }
   const onError = typeof opts.onError === 'function' ? opts.onError : null;
-  const instrumentInfo = opts.instrumentInfo;
-
-  function actionDistPts(a, b, payload = {}) {
-    const gap = dist(a, b);
-    if (gap === '') return '';
-    const symbol = stripSymbol(payload?.symbol);
-    const context = {
-      provider: payload?.provider || payload?.meta?.provider,
-      symbol,
-      instrumentType: payload?.instrumentType,
-      payload
-    };
-    const calculate = () => {
-      if (instrumentInfo && typeof instrumentInfo.toPoints === 'function') {
-        return instrumentInfo.toPoints(context, gap, {
-          explicitTickSize: payload?.tickSize,
-          deltaTokenForFallback: String(gap)
-        });
-      }
-      return points.toPoints(payload?.tickSize, symbol, gap, undefined, String(gap));
-    };
-    if (!instrumentInfo || typeof instrumentInfo.get !== 'function' || instrumentInfo.peek?.(context)) {
-      const value = calculate();
-      return Number.isFinite(value) ? value : '';
-    }
-    return instrumentInfo.get(context, { quote: false, timeoutMs: 5000 })
-      .then(() => {
-        const value = calculate();
-        return Number.isFinite(value) ? value : '';
-      })
-      .catch(() => {
-        const value = calculate();
-        return Number.isFinite(value) ? value : '';
-      });
-  }
-
-  function actionDistPtsPlus(a, b, extra, payload = {}) {
-    if (hasInvalidNumericArg([extra])) return '';
-    const finish = (rawPts) => {
-      if (rawPts === '') return '';
-      const pts = Number(rawPts);
-      const extraPts = Number(extra);
-      if (!Number.isFinite(pts) || !Number.isFinite(extraPts)) return '';
-      return add(pts, extraPts);
-    };
-    const rawPts = actionDistPts(a, b, payload);
-    return rawPts && typeof rawPts.then === 'function' ? rawPts.then(finish) : finish(rawPts);
-  }
-
-  registerActionFunction('stripSymbol', stripSymbol);
   registerActionFunction('add', add);
   registerActionFunction('dist', dist);
-  registerActionFunction('distPts', actionDistPts);
-  registerActionFunction('distPtsPlus', actionDistPtsPlus);
-  registerActionFunction('optionLegs', optionLegs);
-  registerActionFunction('optionLegPair', optionLegPair);
 
   function getRunnerKey(name) {
     return typeof name === 'string' && name.trim()
@@ -598,4 +479,4 @@ function createActionsBus(opts = {}) {
   };
 }
 
-module.exports = { createActionsBus, stripSymbol, add, dist, distPts, distPtsPlus, getPathValue, optionLegs, optionLegPair };
+module.exports = { createActionsBus, add, dist, getPathValue };

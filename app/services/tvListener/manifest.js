@@ -3,6 +3,7 @@ const fetch = require('node-fetch');
 const settings = require('../settings');
 const loadConfig = require('../../config/load');
 const { AddCommand } = require('../commands/add');
+const { stripSymbol } = require('./actionFunctions');
 
 settings.register(
   'tv-listener',
@@ -15,7 +16,14 @@ function intVal(v, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function registerActionFunctions(servicesApi = {}) {
+  const bus = servicesApi.actionBus;
+  if (!bus || typeof bus.registerActionFunction !== 'function') return [];
+  return [bus.registerActionFunction('stripSymbol', stripSymbol)].filter(Boolean);
+}
+
 function initService(servicesApi = {}) {
+  registerActionFunctions(servicesApi);
   const tvApi = servicesApi.tvListener = servicesApi.tvListener || {};
 
   let lastActivity = null;
@@ -40,12 +48,25 @@ function initService(servicesApi = {}) {
   } catch {
     cfg = {};
   }
-  if (cfg.enabled === false) return;
-
-
   const tvProxy = servicesApi.tvProxy;
   if (tvProxy && typeof tvProxy.addListener === 'function') {
     tvProxy.addListener((rec) => {
+      if (cfg.enabled === false) return;
+      if (cfg.webhook?.enabled === true && rec?.event === 'message' && typeof rec.text === 'string' && rec.text.includes('@ATR')) {
+        let webhookUrl = typeof cfg.webhook.url === 'string' ? cfg.webhook.url : null;
+        if (!webhookUrl) {
+          const port = intVal(cfg.webhook.port);
+          if (port) webhookUrl = `http://localhost:${port}/webhook`;
+        }
+        if (webhookUrl) {
+          fetch(webhookUrl, {
+            method: 'POST',
+            body: rec.text,
+            headers: { 'content-type': 'text/plain' }
+          }).catch(() => {});
+        }
+        return;
+      }
       if (!rec || rec.event !== 'http_request' || typeof rec.text !== 'string') return;
       try {
         const payload = JSON.parse(rec.text);
@@ -90,26 +111,6 @@ function initService(servicesApi = {}) {
       } catch {}
     });
 
-    if (cfg.webhook && cfg.webhook.enabled === true) {
-      let webhookUrl = typeof cfg.webhook.url === 'string' ? cfg.webhook.url : null;
-      if (!webhookUrl) {
-        const port = intVal(cfg.webhook.port);
-        if (port) webhookUrl = `http://localhost:${port}/webhook`;
-      }
-      if (webhookUrl) {
-        tvProxy.addListener((rec) => {
-          if (rec.event === 'message' && typeof rec.text === 'string' && rec.text.includes('@ATR')) {
-            fetch(webhookUrl, {
-              method: 'POST',
-              body: rec.text,
-              headers: { 'content-type': 'text/plain' }
-            }).catch(() => {});
-          }
-        });
-      } else {
-        console.error('[tv-listener] missing webhook.port or webhook.url');
-      }
-    }
   }
 
   class LastCommand extends AddCommand {
@@ -141,7 +142,20 @@ function initService(servicesApi = {}) {
   }
 
   if (!Array.isArray(servicesApi.commands)) servicesApi.commands = [];
-  servicesApi.commands.push(new LastCommand());
+  const lastCommand = new LastCommand();
+  if (cfg.enabled !== false) servicesApi.commands.push(lastCommand);
+  settings.onApply('tv-listener', ({ config }) => {
+    cfg = config || {};
+    for (let i = servicesApi.commands.length - 1; i >= 0; i -= 1) {
+      if (servicesApi.commands[i]?.constructor?.name === 'LastCommand') servicesApi.commands.splice(i, 1);
+    }
+    const commands = cfg.enabled === false ? [] : [lastCommand];
+    servicesApi.commands.push(...commands);
+    servicesApi.commandLine?.replaceCommands?.(
+      command => command?.constructor?.name === 'LastCommand',
+      commands
+    );
+  });
 }
 
-module.exports = { initService };
+module.exports = { initService, registerActionFunctions };

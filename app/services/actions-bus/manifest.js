@@ -58,7 +58,6 @@ function initService(servicesApi = {}) {
   const bus = servicesApi.actionBus && typeof servicesApi.actionBus.emit === 'function'
     ? servicesApi.actionBus
     : createActionsBus({
-        instrumentInfo: servicesApi.instrumentInfo,
         initialActionStates: savedStates,
         onActionStateChange: saveActionState,
         onError(err, entry) {
@@ -68,17 +67,18 @@ function initService(servicesApi = {}) {
 
   servicesApi.actionBus = bus;
 
-  if (servicesApi.instrumentInfo && typeof servicesApi.instrumentInfo.on === 'function' && !bus.__instrumentInfoBridge) {
-    bus.__instrumentInfoBridge = true;
-    servicesApi.instrumentInfo.on('updated', snapshot => bus.emit('instrument-info:updated', snapshot));
-  }
-
   const enabled = cfg.enabled !== false;
   if (enabled && Array.isArray(cfg.actions)) {
     bus.configure(cfg.actions);
   } else {
     bus.configure([]);
   }
+  settings.onApply('actions-bus', ({ config }) => {
+    bus.configure(config?.enabled !== false && Array.isArray(config?.actions) ? config.actions : []);
+    for (const win of (require('electron').BrowserWindow?.getAllWindows?.() || [])) {
+      if (!win.isDestroyed()) win.webContents.send('actions-bus:changed', bus.listNamedActions());
+    }
+  });
 
   if (ipcMain && typeof ipcMain.handle === 'function') {
     ipcMain.handle('actions-bus:list', () => bus.listNamedActions());
@@ -140,6 +140,10 @@ function hookRenderer(ipcRenderer) {
   }
 
   refresh();
+  ipcRenderer.on('actions-bus:changed', (_event, list) => {
+    if (Array.isArray(list)) render(list);
+    else refresh();
+  });
 }
 
 module.exports = { initService, hookRenderer };

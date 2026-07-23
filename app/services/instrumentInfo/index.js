@@ -1,6 +1,6 @@
 const { EventEmitter } = require('events');
 const { detectInstrumentType } = require('../instruments');
-const points = require('../points');
+const points = require('./points');
 
 const DEFAULT_QUOTE_TTL_MS = 1000;
 const DEFAULT_METADATA_TTL_MS = 5 * 60 * 1000;
@@ -103,6 +103,7 @@ function withTimeout(promise, timeoutMs) {
 function createInstrumentInfoService({
   brokerage,
   clock = () => Date.now(),
+  schedule = typeof setImmediate === 'function' ? setImmediate : (callback => setTimeout(callback, 0)),
   quoteTtlMs = DEFAULT_QUOTE_TTL_MS,
   metadataTtlMs = DEFAULT_METADATA_TTL_MS,
   timeoutMs = DEFAULT_TIMEOUT_MS,
@@ -116,6 +117,34 @@ function createInstrumentInfoService({
   const cache = new Map();
   const quoteInflight = new Map();
   const metadataInflight = new Map();
+  const metadataPrewarmers = new Map();
+
+  function registerMetadataPrewarmer(name, callback) {
+    const key = String(name || '').trim();
+    if (!key || typeof callback !== 'function' || metadataPrewarmers.has(key)) return null;
+    const entry = { callback, cancelled: false };
+    metadataPrewarmers.set(key, entry);
+    try {
+      schedule(() => {
+        if (entry.cancelled || metadataPrewarmers.get(key) !== entry) return;
+        Promise.resolve()
+          .then(() => callback({ brokerage }))
+          .catch(err => {
+            if (typeof onError === 'function') onError(err, { section: 'metadata-prewarm', name: key });
+          });
+      });
+    } catch (err) {
+      metadataPrewarmers.delete(key);
+      if (typeof onError === 'function') onError(err, { section: 'metadata-prewarm', name: key });
+      return null;
+    }
+    return () => {
+      if (metadataPrewarmers.get(key) !== entry) return false;
+      entry.cancelled = true;
+      metadataPrewarmers.delete(key);
+      return true;
+    };
+  }
 
   function resolveContext(context = {}) {
     const input = typeof context === 'string' ? { symbol: context } : (context || {});
@@ -324,6 +353,20 @@ function createInstrumentInfoService({
     );
   }
 
+  function invalidateConfigTickSizes() {
+    let count = 0;
+    for (const record of cache.values()) {
+      if (!String(record.sources?.tickSize || '').startsWith('config:')) continue;
+      delete record.metadata.tickSize;
+      delete record.sources.tickSize;
+      record.metadataUpdatedAt = null;
+      ensureTickFallback(record);
+      emitUpdated(record, { quote: false, metadata: true });
+      count += 1;
+    }
+    return count;
+  }
+
   function on(eventName, handler) {
     emitter.on(eventName, handler);
     return () => emitter.off(eventName, handler);
@@ -336,8 +379,11 @@ function createInstrumentInfoService({
     resolveTickSize,
     getTickSizeResolution,
     toPoints,
+    invalidateConfigTickSizes,
+    registerMetadataPrewarmer,
     on,
-    _cache: cache
+    _cache: cache,
+    _metadataPrewarmers: metadataPrewarmers
   };
 }
 

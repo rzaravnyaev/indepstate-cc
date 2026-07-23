@@ -8,6 +8,11 @@ class PendingOrderService {
     this.nextId = 1;
   }
 
+  configureStrategies(createStrategy) {
+    if (typeof createStrategy !== 'function') throw new Error('createStrategy callback required');
+    this.createStrategy = createStrategy;
+  }
+
   addOrder(opts = {}) {
     const {
       price,
