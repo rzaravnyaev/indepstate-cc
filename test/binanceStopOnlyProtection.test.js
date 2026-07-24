@@ -2,11 +2,19 @@ const assert = require('assert');
 const { EventEmitter } = require('events');
 const { CCXTExecutionAdapter } = require('../app/services/brokerage-adapter-ccxt/comps/ccxt');
 
+function initializeLifecycleState(adapter) {
+  adapter.events = new EventEmitter();
+  adapter.pending = new Map();
+  adapter._ticketToSymbol = new Map();
+  adapter._ticketOpened = new Set();
+  adapter._positionClosedTickets = new Set();
+  return adapter;
+}
+
 function makeProtectionAdapter(markPrice = 100) {
-  const adapter = Object.create(CCXTExecutionAdapter.prototype);
+  const adapter = initializeLifecycleState(Object.create(CCXTExecutionAdapter.prototype));
   adapter.provider = 'ccxt:binance';
   adapter.exchange = { options: {} };
-  adapter.events = new EventEmitter();
   adapter._algoClientToBracket = new Map();
   adapter.requests = [];
   adapter._binanceSignedRequest = async (method, endpoint, request = {}) => {
@@ -42,13 +50,12 @@ function makeBracket(overrides = {}) {
 }
 
 async function testStopOnlyLevelOrderKeepsTakeProfitAbsent() {
-  const adapter = Object.create(CCXTExecutionAdapter.prototype);
+  const adapter = initializeLifecycleState(Object.create(CCXTExecutionAdapter.prototype));
   adapter.provider = 'ccxt:binance';
   adapter.exchange = { options: {} };
   adapter._brackets = new Map();
   adapter._entryClientToBracket = new Map();
   adapter._algoClientToBracket = new Map();
-  adapter.pending = new Map();
   adapter.normalizeBinanceUsdmSymbol = async () => 'FILUSDT';
   adapter._getBinanceSymbolFilters = async () => ({ tickSize: 0.0001, stepSize: 0.1, minNotional: 0 });
   adapter._binanceSignedRequest = async (method, endpoint) => {
@@ -76,6 +83,7 @@ async function testStopOnlyLevelOrderKeepsTakeProfitAbsent() {
     params: {},
     cid: 'level-order-child'
   });
+  await new Promise(resolve => setImmediate(resolve));
 
   assert.strictEqual(result.status, 'ok');
   const bracket = adapter._brackets.get('level-order-child');
@@ -113,11 +121,24 @@ async function testExistingTpAndSlBehaviorIsPreserved() {
   assert.strictEqual(bracket.status, 'PROTECTED');
 }
 
+async function testConcurrentProtectionPlacementIsDeduplicated() {
+  const adapter = makeProtectionAdapter();
+  const bracket = makeBracket();
+
+  await Promise.all([
+    adapter._placeBracketProtection(bracket),
+    adapter._placeBracketProtection(bracket)
+  ]);
+  await adapter._placeBracketProtection(bracket);
+
+  assert.strictEqual(adapter.requests.length, 1);
+  assert.strictEqual(bracket.status, 'PROTECTED');
+}
+
 async function testReconcileDoesNotRecreateAbsentTakeProfit() {
-  const adapter = Object.create(CCXTExecutionAdapter.prototype);
+  const adapter = initializeLifecycleState(Object.create(CCXTExecutionAdapter.prototype));
   adapter.provider = 'ccxt:binance';
   adapter.protectiveOrders = { manualModificationStrategy: 'adopt' };
-  adapter.events = new EventEmitter();
   adapter._brackets = new Map();
   const bracket = makeBracket({
     status: 'PROTECTED',
@@ -148,6 +169,7 @@ async function run() {
   await testStopOnlyLevelOrderKeepsTakeProfitAbsent();
   await testPlacesOnlyStopLoss();
   await testExistingTpAndSlBehaviorIsPreserved();
+  await testConcurrentProtectionPlacementIsDeduplicated();
   await testReconcileDoesNotRecreateAbsentTakeProfit();
   console.log('binanceStopOnlyProtection.test passed');
 }

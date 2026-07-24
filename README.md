@@ -4,6 +4,7 @@ Electron application that executes trading orders received from various sources 
 
 - **blue** – order placed, waiting for fill
 - **yellow** – position opened
+- **gray** – position closed but broker-reported realized P&L is unavailable
 - **green/red** – position closed in profit/loss
 
 A lightweight event bus emits `order:placed`, `position:opened`, `position:closed` and `order:cancelled` so other parts of the app can react to changes.

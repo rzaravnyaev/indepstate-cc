@@ -7,6 +7,10 @@ function makeAdapter(strategy = 'adopt') {
   a.provider = 'ccxt:binance';
   a.protectiveOrders = { manualModificationStrategy: strategy };
   a.events = new EventEmitter();
+  a.pending = new Map();
+  a._ticketToSymbol = new Map();
+  a._ticketOpened = new Set();
+  a._positionClosedTickets = new Set();
   a._brackets = new Map();
   a._placeCalls = 0;
   a._placeBracketProtection = async () => { a._placeCalls += 1; };

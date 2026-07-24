@@ -60,7 +60,7 @@
             "debug": false,
             "host": "127.0.0.1",
             "port": 4002,
-            "clientId": 12,
+            "clientId": 0,
             "accountId": "",
             "defaultTif": "DAY",
             "instruments": {},
@@ -68,6 +68,8 @@
             "marketDataType": 3,
             "defaultTickSize": "",
             "contractResolveTimeoutMs": 5000,
+            "commissionReportTimeoutMs": 10000,
+            "trackExternalExecutions": true,
             "contractResolution": {
                 "enabled": true,
                 "profiles": {

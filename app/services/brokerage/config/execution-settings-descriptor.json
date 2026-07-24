@@ -96,6 +96,8 @@
         "marketDataType": { "type": "number", "description": "Market data type" },
         "defaultTickSize": { "type": "string", "description": "Fallback tick size" },
         "contractResolveTimeoutMs": { "type": "number", "description": "Contract resolution timeout ms" },
+        "commissionReportTimeoutMs": { "type": "number", "description": "How long to wait for broker-reported realized P&L before showing closed/unknown" },
+        "trackExternalExecutions": { "type": "boolean", "description": "Infer unambiguous closes submitted through TWS or other IBKR clients; requires Master API client ID 0 for complete coverage" },
         "contractResolution": {
           "description": "Dynamic contract resolution defaults",
           "enabled": { "type": "boolean", "description": "Resolve missing contracts through IBKR" },
