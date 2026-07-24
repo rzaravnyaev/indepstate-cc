@@ -52,10 +52,18 @@ async function run() {
   global.navigator = { userAgent: 'node.js' };
 
   const renderer = require('../app/renderer.js');
+  const orderCalculator = require('../app/services/orderCalculator');
   const t = renderer.__testing;
   await new Promise(resolve => setTimeout(resolve, 0));
+  orderCalculator.configure({
+    profitRate: 3,
+    riskUsd: {
+      byInstrumentType: { EQ: 50, FX: 40, CX: 0.2 },
+      bySymbol: { TSTSYMBOL: 7, TSTREGULAR: 8 }
+    }
+  });
   t.setLevelOrderConfig({
-    defaults: { riskUsd: 50, maxLot: 3, stopOffsetPts: 4, takeProfitPts: 12, buyPriceSource: 'bid', sellPriceSource: 'bid' },
+    defaults: { maxLot: 3, stopOffsetPts: 4, takeProfitPts: 12, buyPriceSource: 'bid', sellPriceSource: 'bid' },
     symbols: [{ ticker: 'TSTMID', buyPriceSource: 'mid', sellPriceSource: 'bid' }]
   });
 
@@ -96,6 +104,40 @@ async function run() {
   assert.strictEqual(call.payload.sellPriceSource, 'bid');
   assert.strictEqual(call.payload.pointSize, 0.001);
   assert.strictEqual(call.payload.tickSize, 0.001);
+
+  const symbolRow = { cardType: 'levelOrder', ticker: 'TSTSYMBOL', event: 'levelOrder', time: 2, level: 100, provider: 'simulated', instrumentType: 'EQ' };
+  handlers['orders:new'](null, symbolRow);
+  let symbolCard = t.cardByKey(t.rowKey(symbolRow));
+  assert.strictEqual(symbolCard.querySelector('.level-order-line input.risk').value, '7');
+
+  const explicitRow = { cardType: 'levelOrder', ticker: 'TSTEXPLICIT', event: 'levelOrder', time: 3, level: 100, riskUsd: 11, provider: 'simulated', instrumentType: 'EQ' };
+  handlers['orders:new'](null, explicitRow);
+  let explicitCard = t.cardByKey(t.rowKey(explicitRow));
+  assert.strictEqual(explicitCard.querySelector('.level-order-line input.risk').value, '11');
+
+  const regularRow = { ticker: 'TSTREGULAR', event: 'manual', time: 4, price: 100, sl: 5, instrumentType: 'EQ' };
+  handlers['orders:new'](null, regularRow);
+  let regularCard = t.cardByKey(t.rowKey(regularRow));
+  let regularRisk = regularCard.querySelector('.quad-line input.risk');
+  assert.strictEqual(regularRisk.value, '8');
+  regularRisk.value = '12';
+  regularRisk.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+  orderCalculator.configure({
+    profitRate: 3,
+    riskUsd: {
+      byInstrumentType: { EQ: 60, FX: 40, CX: 0.2 },
+      bySymbol: { TSTREGULAR: 9 }
+    }
+  });
+  t.render();
+  regularCard = t.cardByKey(t.rowKey(regularRow));
+  regularRisk = regularCard.querySelector('.quad-line input.risk');
+  assert.strictEqual(regularRisk.value, '12');
+
+  const regularExplicitRow = { ticker: 'TSTREGEXPLICIT', event: 'manual', time: 5, price: 100, sl: 5, risk: 13, instrumentType: 'EQ' };
+  handlers['orders:new'](null, regularExplicitRow);
+  const regularExplicitCard = t.cardByKey(t.rowKey(regularExplicitRow));
+  assert.strictEqual(regularExplicitCard.querySelector('.quad-line input.risk').value, '13');
   const parentRequestId = call.payload.requestId;
   assert.strictEqual(t.cardStates.get(key), 'pending-exec');
   assert(t.levelOrderGroups.has(parentRequestId));
