@@ -11,15 +11,6 @@ const orderCalc = servicesApi.orderCalculator || require('./services/orderCalcul
 const { resolveLevelOrderDefaults, normalizePriceSource, resolveQuotePrice } = require('./services/levelOrder/strategy');
 let orderCardsCfg = loadConfig('../services/orderCards/config/order-cards.json');
 let levelOrderCfg = loadConfig('../services/levelOrder/config/level-order.json');
-const envEquityStop = Number(process.env.DEFAULT_EQUITY_STOP_USD);
-let EQUITY_DEFAULT_STOP_USD = Number.isFinite(envEquityStop)
-  ? envEquityStop
-  : Number(orderCardsCfg?.defaultEquityStopUsd) || 0;
-
-const envCxStop = Number(process.env.DEFAULT_CX_STOP_USD);
-let CX_DEFAULT_STOP_USD = Number.isFinite(envCxStop)
-  ? envCxStop
-  : Number(orderCardsCfg?.defaultCxStopUsd) || 0;
 
 let SHOW_BID_ASK = !!(orderCardsCfg && orderCardsCfg.showBidAsk);
 let SHOW_SPREAD = !!(orderCardsCfg && orderCardsCfg.showSpread);
@@ -180,8 +171,6 @@ loadRendererHooks();
 
 function applyOrderCardsConfig(config = {}) {
   orderCardsCfg = config;
-  EQUITY_DEFAULT_STOP_USD = Number.isFinite(envEquityStop) ? envEquityStop : Number(config.defaultEquityStopUsd) || 0;
-  CX_DEFAULT_STOP_USD = Number.isFinite(envCxStop) ? envCxStop : Number(config.defaultCxStopUsd) || 0;
   SHOW_BID_ASK = !!config.showBidAsk;
   SHOW_SPREAD = !!config.showSpread;
   INSTRUMENT_REFRESH_MS = Number.isFinite(envInstrRefresh) ? envInstrRefresh : Number(config.instrumentRefreshMs) || 1000;
@@ -215,6 +204,7 @@ settingsRuntime.onApply('ui', ({ config }) => {
   if (typeof config.autoscroll === 'boolean') state.autoscroll = config.autoscroll;
 });
 settingsRuntime.onApply('order-cards', ({ config }) => applyOrderCardsConfig(config));
+settingsRuntime.onApply('order-calculator', () => render());
 settingsRuntime.onApply('level-order', ({ config }) => {
   levelOrderCfg = config || {};
   render();
@@ -308,6 +298,14 @@ function getNestedSettingValue(obj, path) {
   return path.split('.').reduce((value, part) => value == null ? undefined : value[part], obj);
 }
 
+function deleteNestedSettingValue(obj, path) {
+  const parts = String(path || '').split('.').filter(Boolean);
+  if (!parts.length) return;
+  const parent = parts.slice(0, -1)
+    .reduce((value, part) => value == null ? undefined : value[part], obj);
+  if (parent && typeof parent === 'object') delete parent[parts.at(-1)];
+}
+
 function cloneSettingsValue(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value));
 }
@@ -325,14 +323,15 @@ function serializeStructuredSettingsForm(form, name) {
     else value = input.value;
     setNestedSettingValue(data, key, value);
   }
-  if (name === 'tick-sizes') {
-    const bySymbol = {};
-    for (const row of form.querySelectorAll('.tick-size-symbol-row')) {
+  for (const group of form.querySelectorAll('.settings-dynamic-map[data-setting-path]')) {
+    const values = {};
+    const valueRole = group.dataset.valueRole || 'value';
+    for (const row of group.querySelectorAll('.settings-dynamic-map-row')) {
       const symbol = row.querySelector('input[data-role="symbol"]')?.value.trim();
-      const tickSize = Number(row.querySelector('input[data-role="tickSize"]')?.value);
-      if (symbol && Number.isFinite(tickSize) && tickSize > 0) bySymbol[symbol] = tickSize;
+      const value = Number(row.querySelector(`input[data-role="${valueRole}"]`)?.value);
+      if (symbol && Number.isFinite(value) && value > 0) values[symbol] = value;
     }
-    data.bySymbol = bySymbol;
+    setNestedSettingValue(data, group.dataset.settingPath, values);
   }
   return data;
 }
@@ -446,14 +445,25 @@ function appendUiWindowStateTools(form, parent = form) {
   refresh();
 }
 
-function appendTickSizeBySymbolTools(form, bySymbol = {}, parent = form) {
+function appendNumericSymbolMapTools(form, {
+  path,
+  title,
+  values = {},
+  valuePlaceholder,
+  valueRole = 'value',
+  rowClass = '',
+  addLabel = 'Add symbol override',
+  onChange
+} = {}, parent = form) {
   const group = document.createElement('div');
   group.className = 'settings-group settings-dynamic-map';
+  group.dataset.settingPath = path;
+  group.dataset.valueRole = valueRole;
 
-  const title = document.createElement('div');
-  title.className = 'settings-group-title';
-  title.textContent = 'Tick size overrides by symbol';
-  group.appendChild(title);
+  const titleElement = document.createElement('div');
+  titleElement.className = 'settings-group-title';
+  titleElement.textContent = title;
+  group.appendChild(titleElement);
 
   const rows = document.createElement('div');
   rows.className = 'settings-dynamic-map-rows';
@@ -461,10 +471,11 @@ function appendTickSizeBySymbolTools(form, bySymbol = {}, parent = form) {
 
   const markDirty = () => {
     form.dataset.dirty = '1';
+    onChange?.();
   };
-  const addRow = (symbol = '', tickSize = '') => {
+  const addRow = (symbol = '', numericValue = '') => {
     const row = document.createElement('div');
-    row.className = 'settings-dynamic-map-row tick-size-symbol-row';
+    row.className = `settings-dynamic-map-row ${rowClass}`.trim();
     row.style.display = 'grid';
     row.style.gridTemplateColumns = '1fr 110px auto';
     row.style.gap = '8px';
@@ -479,14 +490,14 @@ function appendTickSizeBySymbolTools(form, bySymbol = {}, parent = form) {
     symbolInput.addEventListener('input', markDirty);
     row.appendChild(symbolInput);
 
-    const tickInput = document.createElement('input');
-    tickInput.type = 'number';
-    tickInput.step = 'any';
-    tickInput.placeholder = 'Tick size';
-    tickInput.value = tickSize == null ? '' : String(tickSize);
-    tickInput.dataset.role = 'tickSize';
-    tickInput.addEventListener('input', markDirty);
-    row.appendChild(tickInput);
+    const valueInput = document.createElement('input');
+    valueInput.type = 'number';
+    valueInput.step = 'any';
+    valueInput.placeholder = valuePlaceholder;
+    valueInput.value = numericValue == null ? '' : String(numericValue);
+    valueInput.dataset.role = valueRole;
+    valueInput.addEventListener('input', markDirty);
+    row.appendChild(valueInput);
 
     const remove = document.createElement('button');
     remove.type = 'button';
@@ -500,11 +511,11 @@ function appendTickSizeBySymbolTools(form, bySymbol = {}, parent = form) {
     rows.appendChild(row);
   };
 
-  Object.entries(bySymbol || {}).forEach(([symbol, tickSize]) => addRow(symbol, tickSize));
+  Object.entries(values || {}).forEach(([symbol, value]) => addRow(symbol, value));
 
   const add = document.createElement('button');
   add.type = 'button';
-  add.textContent = 'Add symbol override';
+  add.textContent = addLabel;
   add.className = 'settings-array-add';
   add.addEventListener('click', () => {
     addRow('', '');
@@ -512,6 +523,30 @@ function appendTickSizeBySymbolTools(form, bySymbol = {}, parent = form) {
   });
   group.appendChild(add);
   parent.appendChild(group);
+}
+
+function numericSymbolMapSpecs(name, config = {}) {
+  if (name === 'tick-sizes') {
+    return [{
+      path: 'bySymbol',
+      title: 'Tick size overrides by symbol',
+      values: config.bySymbol || {},
+      valuePlaceholder: 'Tick size',
+      valueRole: 'tickSize',
+      rowClass: 'tick-size-symbol-row'
+    }];
+  }
+  if (name === 'order-calculator') {
+    return [{
+      path: 'riskUsd.bySymbol',
+      title: 'Default risk overrides by symbol',
+      values: config.riskUsd?.bySymbol || {},
+      valuePlaceholder: 'Risk $',
+      valueRole: 'riskUsd',
+      rowClass: 'risk-symbol-row'
+    }];
+  }
+  return [];
 }
 
 function showSection(name) {
@@ -532,8 +567,9 @@ function showSection(name) {
       : (descriptorProperties.rawEditor && typeof descriptorProperties.rawEditor === 'object'
           ? descriptorProperties.rawEditor
           : null);
-    const desc = { ...((res.descriptor && res.descriptor.options) || {}) };
-    if (name === 'tick-sizes') delete desc.bySymbol;
+    const desc = cloneSettingsValue((res.descriptor && res.descriptor.options) || {});
+    const dynamicMapPaths = numericSymbolMapSpecs(name, cfg).map(spec => spec.path);
+    dynamicMapPaths.forEach(mapPath => deleteNestedSettingValue(desc, mapPath));
     const form = document.createElement('form');
     form.dataset.section = name;
     form.dataset.editorMode = 'form';
@@ -737,11 +773,14 @@ function showSection(name) {
     };
     const renderStructuredEditor = (config) => {
       structuredEditor.innerHTML = '';
-      const structuredConfig = name === 'tick-sizes' ? { ...(config || {}) } : config;
-      if (name === 'tick-sizes') delete structuredConfig.bySymbol;
+      const structuredConfig = cloneSettingsValue(config) || {};
+      const dynamicMapSpecs = numericSymbolMapSpecs(name, config);
+      dynamicMapSpecs.forEach(spec => deleteNestedSettingValue(structuredConfig, spec.path));
       build(structuredEditor, structuredConfig, desc);
       if (name === 'ui') appendUiWindowStateTools(form, structuredEditor);
-      if (name === 'tick-sizes') appendTickSizeBySymbolTools(form, config?.bySymbol || {}, structuredEditor);
+      dynamicMapSpecs.forEach(spec => {
+        appendNumericSymbolMapTools(form, { ...spec, onChange: markStructuredDirty }, structuredEditor);
+      });
       structuredConfigValue = config;
       structuredEditorChanged = false;
     };
@@ -1782,9 +1821,13 @@ function createCard(row, index) {
 
 function createLevelOrderBody(row, key, $pointSize) {
   const defaults = resolveLevelOrderDefaults(levelOrderCfg, row.ticker);
+  const defaultRisk = orderCalc.defaultRiskUsd({
+    symbol: row.ticker,
+    instrumentType: row.instrumentType || detectInstrumentType(row.ticker)
+  });
   const saved = uiState.get(key) || {
     level: row.level != null ? String(row.level) : '',
-    risk: row.riskUsd != null ? String(row.riskUsd) : (defaults.riskUsd != null ? String(defaults.riskUsd) : ''),
+    risk: row.riskUsd != null ? String(row.riskUsd) : (defaultRisk != null ? String(defaultRisk) : ''),
     stopOffsetPts: row.stopOffsetPts != null ? String(row.stopOffsetPts) : (defaults.stopOffsetPts != null ? String(defaults.stopOffsetPts) : ''),
     maxLot: row.maxLot != null ? String(row.maxLot) : (defaults.maxLot != null ? String(defaults.maxLot) : '0'),
     takeProfitPts: row.takeProfitPts != null ? String(row.takeProfitPts) : (defaults.takeProfitPts != null ? String(defaults.takeProfitPts) : ''),
@@ -2042,12 +2085,13 @@ function createOptionBody(row, key) {
 
 // ======= Crypto body (Qty, Price, SL, TP; TP auto = SL*3) =======
 function createCryptoBody(row, key) {
+  const defaultRisk = orderCalc.defaultRiskUsd({ symbol: row.ticker, instrumentType: 'CX' });
   const saved = uiState.get(key) || {
     qty: row.qty != null ? String(row.qty) : '',
     price: row.price != null ? String(row.price) : '',
     sl: row.sl != null ? String(row.sl) : '',
     tp: row.tp != null ? String(row.tp) : '',
-    risk: CX_DEFAULT_STOP_USD ? String(CX_DEFAULT_STOP_USD) : '', // дефолтный риск из конфига, // як у FX: Risk $, використовується для автоперерахунку qty
+    risk: row.risk != null ? String(row.risk) : (defaultRisk != null ? String(defaultRisk) : ''),
     tpTouched: row.tp != null, // если TP пришёл с хуком — не перезатираем авто-логикой
   };
   let tpTouched = !!saved.tpTouched;
@@ -2237,12 +2281,13 @@ function createCryptoBody(row, key) {
 
 // ======= Equities body (Qty, Price, SL, TP; Risk$ separate line; Qty auto from Risk/SL) =======
 function createFxBody(row, key) {
+  const defaultRisk = orderCalc.defaultRiskUsd({ symbol: row.ticker, instrumentType: 'FX' });
   const saved = uiState.get(key) || {
     qty: row.qty != null ? String(row.qty) : '',
     price: row.price != null ? String(row.price) : '',
     sl: row.sl != null ? String(row.sl) : '',
     tp: row.tp != null ? String(row.tp) : '',
-    risk: row.risk != null ? String(row.risk) : (EQUITY_DEFAULT_STOP_USD ? String(EQUITY_DEFAULT_STOP_USD) : ''), // дефолтный риск или из строки
+    risk: row.risk != null ? String(row.risk) : (defaultRisk != null ? String(defaultRisk) : ''),
     tpTouched: row.tp != null,
   };
   let tpTouched = !!saved.tpTouched;
@@ -2421,12 +2466,13 @@ function createFxBody(row, key) {
 
 // ======= Equities body (Qty, Price, SL, TP; Risk$ separate line; Qty auto from Risk/SL) =======
 function createEquitiesBody(row, key) {
+  const defaultRisk = orderCalc.defaultRiskUsd({ symbol: row.ticker, instrumentType: 'EQ' });
   const saved = uiState.get(key) || {
     qty: row.qty != null ? String(row.qty) : '',
     price: row.price != null ? String(row.price) : '',
     sl: row.sl != null ? String(row.sl) : '',
     tp: row.tp != null ? String(row.tp) : '',
-    risk: row.risk != null ? String(row.risk) : (EQUITY_DEFAULT_STOP_USD ? String(EQUITY_DEFAULT_STOP_USD) : ''), // дефолтный риск или из строки
+    risk: row.risk != null ? String(row.risk) : (defaultRisk != null ? String(defaultRisk) : ''),
     tpTouched: row.tp != null,
   };
   let tpTouched = !!saved.tpTouched;

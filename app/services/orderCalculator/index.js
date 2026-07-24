@@ -1,4 +1,15 @@
 const loadConfig = require('../../config/load');
+const { detectInstrumentType } = require('../instruments');
+
+function finiteNumber(value) {
+  if (value == null || value === '') return undefined;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : undefined;
+}
+
+function normalizedSymbol(value) {
+  return String(value || '').trim().toUpperCase();
+}
 
 class OrderCalculator {
   constructor({ config, tradeRules } = {}) {
@@ -15,8 +26,45 @@ class OrderCalculator {
     try {
       return loadConfig('../services/orderCalculator/config/order-calculator.json');
     } catch (e) {
-      return { profitRate: 3 };
+      return {
+        profitRate: 3,
+        riskUsd: {
+          byInstrumentType: { EQ: 50, FX: 50, CX: 0.2 },
+          bySymbol: {}
+        }
+      };
     }
+  }
+
+  // Resolve the shared card risk default. Symbol overrides take precedence over
+  // instrument defaults; legacy environment variables override only the
+  // corresponding instrument default.
+  defaultRiskUsd({ symbol, instrumentType } = {}) {
+    const riskConfig = this.config?.riskUsd || {};
+    const wantedSymbol = normalizedSymbol(symbol);
+    const bySymbol = riskConfig.bySymbol;
+    if (wantedSymbol && bySymbol && typeof bySymbol === 'object' && !Array.isArray(bySymbol)) {
+      const matchedKey = Object.keys(bySymbol)
+        .find(key => normalizedSymbol(key) === wantedSymbol);
+      if (matchedKey) {
+        const symbolRisk = finiteNumber(bySymbol[matchedKey]);
+        if (symbolRisk !== undefined) return symbolRisk;
+      }
+    }
+
+    const explicitType = String(instrumentType || '').trim().toUpperCase();
+    const type = explicitType || detectInstrumentType(wantedSymbol);
+    const envName = type === 'CX'
+      ? 'DEFAULT_CX_STOP_USD'
+      : (type === 'EQ' || type === 'FX' ? 'DEFAULT_EQUITY_STOP_USD' : '');
+    const envRisk = envName ? finiteNumber(process.env[envName]) : undefined;
+    if (envRisk !== undefined) return envRisk;
+
+    const byInstrumentType = riskConfig.byInstrumentType;
+    if (!byInstrumentType || typeof byInstrumentType !== 'object') return undefined;
+    const matchedType = Object.keys(byInstrumentType)
+      .find(key => String(key).trim().toUpperCase() === type);
+    return matchedType ? finiteNumber(byInstrumentType[matchedType]) : undefined;
   }
 
   // Calculate stop loss points from entry and stop prices

@@ -36,7 +36,6 @@ Config shape:
 ```json
 {
   "defaults": {
-    "riskUsd": 50,
     "maxLot": 0,
     "minLot": 1,
     "stopOffsetPts": 10,
@@ -48,7 +47,6 @@ Config shape:
 }
 ```
 
-- `riskUsd`: total position risk in dollars across all child orders.
 - `maxLot`: max quantity for one child order. `0` disables splitting.
 - `minLot`: minimum quantity step for sizing and split remainders. `1` keeps whole-number sizing; `0.01` allows quantities like `12.34`.
 - `stopOffsetPts`: stop offset from the level, in points.
@@ -56,6 +54,8 @@ Config shape:
 - `buyPriceSource`: quote side used by `LB`; one of `bid`, `ask`, or `mid`. Default is `bid`.
 - `sellPriceSource`: quote side used by `LS`; one of `bid`, `ask`, or `mid`. Default is `bid`.
 - `symbols`: ticker-specific overrides with the same fields plus `ticker`.
+
+The Risk $ field uses the shared order-calculator risk configuration. An explicit `riskUsd` on the incoming row wins over an order-calculator symbol override, which wins over the instrument-type default. See [order-calculator.md](order-calculator.md).
 
 `mid` is calculated as `(bid + ask) / 2` and requires both quote sides.
 
@@ -66,7 +66,6 @@ Example:
   "symbols": [
     {
       "ticker": "ADAUSDT.cfd",
-      "riskUsd": 1,
       "maxLot": 200,
       "minLot": 0.01,
       "stopOffsetPts": 4,

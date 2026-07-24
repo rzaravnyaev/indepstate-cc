@@ -16,8 +16,16 @@ function run() {
   tradeRules.configure({ rules: { maxQty: { default: 4 } } });
   assert.strictEqual(tradeRules.validate({ qty: 3, instrumentType: 'EQ' }).ok, true);
 
-  orderCalculator.configure({ profitRate: 5 });
+  orderCalculator.configure({
+    profitRate: 5,
+    riskUsd: {
+      byInstrumentType: { EQ: 20, FX: 20, CX: 0.2 },
+      bySymbol: { LIVE: 3 }
+    }
+  });
   assert.strictEqual(orderCalculator.takePts(2), 10);
+  assert.strictEqual(orderCalculator.defaultRiskUsd({ symbol: 'live', instrumentType: 'EQ' }), 3);
+  assert.strictEqual(orderCalculator.defaultRiskUsd({ symbol: 'OTHER', instrumentType: 'EQ' }), 20);
 
   adapterRegistry.initExecutionConfig({
     default: 'simulated',
