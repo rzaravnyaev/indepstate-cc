@@ -1169,13 +1169,15 @@ function setCardState(key, state) {
 
     const closePlacedOrder = async () => {
       const orderInfo = placedOrderByKey.get(key);
+      const currentRow = appState.rows.find(r => rowKey(r) === key);
       let result = null;
       if (orderInfo && orderInfo.ticket && orderInfo.provider) {
         try {
           result = await ipcRenderer.invoke('execution:cancel-order', {
             provider: orderInfo.provider,
             ticket: orderInfo.ticket,
-            symbol: orderInfo.symbol
+            symbol: orderInfo.symbol,
+            name: orderInfo.name || currentRow?.name
           });
         } catch (err) {
           result = { status: 'error', reason: err?.message || String(err) };
@@ -1190,7 +1192,7 @@ function setCardState(key, state) {
         }
         const finalValuation = result?.valuation || result?.raw?.valuation;
         if (finalValuation) {
-          const current = appState.rows.find(r => rowKey(r) === key);
+          const current = currentRow;
           if (current) current.valuation = finalValuation;
           if (orderInfo) orderInfo.valuation = finalValuation;
         }
@@ -3005,6 +3007,7 @@ async function place(kind, row, v, instrumentType, btnLabel) {
           provider: res.provider || row.provider || 'optionstrat',
           ticket: String(res.providerOrderId),
           symbol: row.symbol || row.ticker || '',
+          name: row.name,
           payoff: res.payoff || res.raw?.payoff,
           valuation: res.valuation || res.raw?.valuation,
           openedAt
@@ -3445,6 +3448,7 @@ ipcRenderer.on('execution:result', (_evt, rec) => {
         provider: rec.provider || (row && row.provider) || '',
         ticket: providerOrderId,
         symbol: symbol,
+        name: rec.order?.name || row?.name,
         payoff: rec.payoff || rec.raw?.payoff,
         valuation: rec.valuation || rec.raw?.valuation,
         openedAt

@@ -44,7 +44,9 @@ async function run() {
     { event: 'foo', action: 'other:always-run' },
     { event: 'foo', action: 'no-prefix-run' },
     { event: 'legs', action: 'webhook:send is-simple-txt props=text:{legs[0].strike}/{legs[1].strike}' },
-    { event: 'legs-helper', action: 'webhook:send is-simple-txt props=text:optionLegs({legs})' }
+    { event: 'legs-helper', action: 'webhook:send is-simple-txt props=text:optionLegs({legs})' },
+    { event: 'option-open', action: 'webhook:send is-simple-txt props=text:{optionOpenLegsText} net {optionOpenNetPrice}' },
+    { event: 'option-close', action: 'webhook:send is-simple-txt props=text:{optionCloseLegsText} net {optionCloseNetPrice} pnl {optionPnl}' }
   ]);
 
   let named = bus.listNamedActions();
@@ -100,6 +102,8 @@ async function run() {
   bus.emit('bar', { symbol: 'AAA' });
   bus.emit('legs', { legs: [{ option: 'PUT', side: 'buy', strike: 7290, quantity: 1 }, { option: 'PUT', side: 'sell', strike: 7280, quantity: 1 }] });
   bus.emit('legs-helper', { legs: [{ option: 'PUT', side: 'buy', strike: 7290, quantity: 1 }, { option: 'PUT', side: 'sell', strike: 7280, quantity: 1 }] });
+  bus.emit('option-open', { optionOpenLegsText: '+1C7500@1.20/-1C7510@0.45', optionOpenNetPrice: 0.75 });
+  bus.emit('option-close', { optionCloseLegsText: '+1C7500@1.75/-1C7510@0.30', optionCloseNetPrice: 1.45, optionPnl: 600 });
   assert.deepStrictEqual(executed, [
     'cli:test AAA',
     'cli:bar AAA',
@@ -117,7 +121,9 @@ async function run() {
     'cli:no-prefix-run',
     'cli:bar AAA',
     'webhook:send is-simple-txt props=text:7290/7280',
-    'webhook:send is-simple-txt props=text:+1P7290/-1P7280'
+    'webhook:send is-simple-txt props=text:+1P7290/-1P7280',
+    'webhook:send is-simple-txt props=text:+1C7500@1.20/-1C7510@0.45 net 0.75',
+    'webhook:send is-simple-txt props=text:+1C7500@1.75/-1C7510@0.30 net 1.45 pnl 600'
   ]);
 
   bus.setActionEnabled('Foo action', false);
@@ -142,6 +148,8 @@ async function run() {
     'cli:bar AAA',
     'webhook:send is-simple-txt props=text:7290/7280',
     'webhook:send is-simple-txt props=text:+1P7290/-1P7280',
+    'webhook:send is-simple-txt props=text:+1C7500@1.20/-1C7510@0.45 net 0.75',
+    'webhook:send is-simple-txt props=text:+1C7500@1.75/-1C7510@0.30 net 1.45 pnl 600',
     'other:always-run',
     'cli:no-prefix-run'
   ]);

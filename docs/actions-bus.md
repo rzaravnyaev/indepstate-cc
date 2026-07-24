@@ -122,6 +122,26 @@ servicesApi.actionBus.registerActionFunction('myHelper', (value, payload, entry)
 
 The registration call returns a disposer, and `unregisterActionFunction(name)` is also available.
 
+## OptionStrat lifecycle placeholders
+
+Successful OptionStrat `order:placed` events expose `{optionOpenLegsText}` and
+`{optionOpenNetPrice}`. Successful `order:closed` events expose
+`{optionCloseLegsText}`, `{optionCloseNetPrice}`, and `{optionPnl}` when the close
+result includes leg prices and valuation change.
+
+Webhook actions can map an event payload field onto the parameter expected by the
+target body with `targetParam:eventPayloadPath`. For example:
+
+```json
+{
+  "event": "order:closed",
+  "action": "webhook:send is-signal-relay legs:optionCloseLegsText price:optionCloseNetPrice"
+}
+```
+
+If `optionCloseLegsText` is missing, the target still resolves `{legs}` from the
+original event payload.
+
 ## Command runners
 
 Every action expands to a command string which is executed by a registered runner:

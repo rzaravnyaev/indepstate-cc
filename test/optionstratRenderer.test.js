@@ -112,7 +112,7 @@ async function run() {
   assert(card.textContent.includes('SPY 0DTE +10C755/-10C756'));
   assert.strictEqual(card.querySelector('button.btn').textContent, 'OPEN');
 
-  t.placedOrderByKey.set(key, { provider: 'optionstrat', ticket: 'deal-1', symbol: 'SPY', payoff });
+  t.placedOrderByKey.set(key, { provider: 'optionstrat', ticket: 'deal-1', symbol: 'SPY', name: row.name, payoff });
   row.valuation = { initialValue: 900, currentValue: 950, change: 50, changePct: 5.56 };
   row.openedAt = Date.UTC(2026, 5, 13, 9, 30);
   t.setCardState(key, 'placed');
@@ -129,7 +129,7 @@ async function run() {
   closeButton.click();
   await new Promise(resolve => setImmediate(resolve));
   Date.now = originalDateNow;
-  assert.deepStrictEqual(cancelled, [{ provider: 'optionstrat', ticket: 'deal-1', symbol: 'SPY' }]);
+  assert.deepStrictEqual(cancelled, [{ provider: 'optionstrat', ticket: 'deal-1', symbol: 'SPY', name: 'BCS 755/756' }]);
   card = t.cardByKey(key);
   assert(card.querySelector('.card__status').classList.contains('card__status--profit'));
   assert.strictEqual(card.querySelector('.btns').style.display, 'none');
