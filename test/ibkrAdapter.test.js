@@ -19,11 +19,15 @@ class FakeClient extends EventEmitter {
     this.marketDataRequests = [];
     this.cancelledMarketData = [];
     this.contractDetailsRequests = [];
+    this.positionRequests = 0;
+    this.executionRequests = [];
   }
   connect() { this.connected = true; this.emit('connect'); }
   reqManagedAccts() {}
   reqIds() {}
   reqOpenOrders() {}
+  reqPositions() { this.positionRequests += 1; }
+  reqExecutions(reqId, filter) { this.executionRequests.push({ reqId, filter }); }
   reqContractDetails(reqId, contract) { this.contractDetailsRequests.push({ reqId, contract }); }
   reqMarketDataType(type) { this.marketDataTypes.push(type); }
   reqMktData(reqId, contract, genericTickList, snapshot, regulatorySnapshot, options) {
@@ -92,6 +96,10 @@ function ready(adapter, client, nextId = 100) {
     assert.strictEqual(invalid.ok, false);
     assert(invalid.errors.includes('debug must be boolean'));
     assert(invalid.errors.length >= 5);
+    const invalidLifecycle = validateConfig({ enabled: false, host: '127.0.0.1', port: 4002, clientId: 0, mode: 'paper', defaultTif: 'DAY', commissionReportTimeoutMs: 0, trackExternalExecutions: 'yes' });
+    assert.strictEqual(invalidLifecycle.ok, false);
+    assert(invalidLifecycle.errors.includes('commissionReportTimeoutMs must be a positive integer'));
+    assert(invalidLifecycle.errors.includes('trackExternalExecutions must be boolean'));
   }
 
 
@@ -637,12 +645,16 @@ function ready(adapter, client, nextId = 100) {
   {
     const { adapter, client } = makeAdapter({ cancelConfirmTimeoutMs: 1000 });
     ready(adapter, client, 700);
+    const lifecycle = [];
+    adapter.on('position:opened', event => lifecycle.push(event));
+    adapter.on('position:closed', event => lifecycle.push(event));
     const p = adapter.cancelOrder('42');
     assert.deepStrictEqual(client.cancels, [42]);
     client.emit('orderStatus', 42, 'Cancelled', 0, 1);
     const res = await p;
     assert.strictEqual(res.status, 'ok');
     assert.strictEqual(res.providerOrderId, '42');
+    assert.strictEqual(lifecycle.length, 0);
   }
 
   {
@@ -655,6 +667,131 @@ function ready(adapter, client, nextId = 100) {
     client.emit('error', new Error('Order rejected by IB'), 201, 800);
     assert(rejected);
     assert.match(rejected.reason, /IBKR API error/);
+  }
+
+  {
+    const { adapter, client } = makeAdapter({ commissionReportTimeoutMs: 100 });
+    ready(adapter, client, 900);
+    const confirmed = [];
+    const opened = [];
+    const closed = [];
+    adapter.on('order:confirmed', event => confirmed.push(event));
+    adapter.on('position:opened', event => opened.push(event));
+    adapter.on('position:closed', event => closed.push(event));
+
+    const result = await adapter.placeOrder({ symbol: 'AAPL', side: 'buy', type: 'limit', qty: 1, price: 100, tickSize: 0.01, tp: 200, sl: 100, clientOrderId: 'cid-life' });
+    assert.deepStrictEqual(result.raw.orderIds, [900, 901, 902]);
+    assert.strictEqual(client.placed.every(item => item.order.orderRef === 'cid-life'), true);
+    client.emit('orderStatus', 901, 'Submitted', 0, 1);
+    assert.strictEqual(confirmed.length, 0);
+    client.emit('orderStatus', 900, 'Submitted', 0, 1);
+    assert.strictEqual(confirmed.length, 1);
+    assert.strictEqual(confirmed[0].ticket, '900');
+
+    const contract = client.placed[0].contract;
+    client.emit('execDetails', -1, contract, { execId: 'entry.1.01', orderId: 900, orderRef: 'cid-life', acctNumber: 'DU123', side: 'BOT', shares: 0.4 });
+    client.emit('execDetails', -1, contract, { execId: 'entry.1.01', orderId: 900, orderRef: 'cid-life', acctNumber: 'DU123', side: 'BOT', shares: 0.4 });
+    client.emit('execDetails', -1, contract, { execId: 'entry.2.01', orderId: 900, orderRef: 'cid-life', acctNumber: 'DU123', side: 'BOT', shares: 0.6 });
+    assert.strictEqual(opened.length, 1);
+    assert.strictEqual(opened[0].ticket, '900');
+
+    client.emit('commissionReport', { execId: 'exit.1.01', realizedPNL: 2.5 });
+    client.emit('execDetails', -1, contract, { execId: 'exit.1.01', orderId: 901, orderRef: 'cid-life', acctNumber: 'DU123', side: 'SLD', shares: 0.25 });
+    client.emit('execDetails', -1, contract, { execId: 'exit.2.01', orderId: 901, orderRef: 'cid-life', acctNumber: 'DU123', side: 'SLD', shares: 0.75 });
+    assert.strictEqual(closed.length, 0);
+    client.emit('commissionReport', { execId: 'exit.2.01', realizedPNL: 7.5 });
+    assert.strictEqual(closed.length, 1);
+    assert.deepStrictEqual(closed[0], { ticket: '900', trade: { profit: 10, pnlStatus: 'reported' } });
+
+    client.emit('execDetails', -1, contract, { execId: 'exit.2.02', orderId: 901, orderRef: 'cid-life', acctNumber: 'DU123', side: 'SLD', shares: 0.75 });
+    client.emit('commissionReport', { execId: 'exit.2.02', realizedPNL: -12.5 });
+    assert.strictEqual(closed.length, 2);
+    assert.strictEqual(closed[1].trade.profit, -10);
+  }
+
+  {
+    const { adapter, client } = makeAdapter({ commissionReportTimeoutMs: 20 });
+    ready(adapter, client, 1000);
+    const closed = [];
+    adapter.on('position:closed', event => closed.push(event));
+    await adapter.placeOrder({ symbol: 'AAPL', side: 'buy', type: 'market', qty: 1, clientOrderId: 'cid-late' });
+    client.emit('orderStatus', 1000, 'Submitted', 0, 1);
+    const contract = client.placed[0].contract;
+    client.emit('execDetails', -1, contract, { execId: 'late.entry.01', orderId: 1000, orderRef: 'cid-late', acctNumber: 'DU123', side: 'BOT', shares: 1 });
+    client.emit('execDetails', -1, contract, { execId: 'late.exit.01', orderId: 9999, orderRef: 'cid-late', acctNumber: 'DU123', side: 'SLD', shares: 1 });
+    await new Promise(resolve => setTimeout(resolve, 35));
+    assert.deepStrictEqual(closed[0], { ticket: '1000', trade: { pnlStatus: 'unavailable' } });
+    client.emit('commissionReport', { execId: 'late.exit.01', realizedPNL: 4 });
+    assert.deepStrictEqual(closed[1], { ticket: '1000', trade: { profit: 4, pnlStatus: 'reported' } });
+  }
+
+  {
+    const { adapter, client } = makeAdapter({ clientId: 0, trackExternalExecutions: true, commissionReportTimeoutMs: 100 });
+    ready(adapter, client, 1100);
+    client.emit('positionEnd');
+    const opened = [];
+    const closed = [];
+    adapter.on('position:opened', event => opened.push(event));
+    adapter.on('position:closed', event => closed.push(event));
+    await adapter.placeOrder({ symbol: 'AAPL', side: 'buy', type: 'market', qty: 1, clientOrderId: 'cid-external' });
+    client.emit('orderStatus', 1100, 'Submitted', 0, 1);
+    const contract = client.placed[0].contract;
+    client.emit('execDetails', -1, contract, { execId: 'external.entry.01', orderId: 1100, orderRef: 'cid-external', acctNumber: 'DU123', side: 'BOT', shares: 1 });
+    client.emit('execDetails', -1, contract, { execId: 'external.close.01', orderId: 5000, acctNumber: 'DU123', side: 'SLD', shares: 1 });
+    client.emit('commissionReport', { execId: 'external.close.01', realizedPNL: -3 });
+    assert.strictEqual(opened.length, 1);
+    assert.strictEqual(closed.length, 1);
+    assert.strictEqual(closed[0].trade.profit, -3);
+
+    const first = await adapter.placeOrder({ symbol: 'AAPL', side: 'buy', type: 'market', qty: 1, clientOrderId: 'cid-a' });
+    const second = await adapter.placeOrder({ symbol: 'AAPL', side: 'buy', type: 'market', qty: 1, clientOrderId: 'cid-b' });
+    const firstId = first.raw.orderIds[0];
+    const secondId = second.raw.orderIds[0];
+    client.emit('orderStatus', firstId, 'Submitted', 0, 1);
+    client.emit('orderStatus', secondId, 'Submitted', 0, 1);
+    client.emit('execDetails', -1, contract, { execId: 'a.entry.01', orderId: firstId, orderRef: 'cid-a', acctNumber: 'DU123', side: 'BOT', shares: 1 });
+    client.emit('execDetails', -1, contract, { execId: 'b.entry.01', orderId: secondId, orderRef: 'cid-b', acctNumber: 'DU123', side: 'BOT', shares: 1 });
+    client.emit('execDetails', -1, contract, { execId: 'ambiguous.close.01', orderId: 5001, acctNumber: 'DU123', side: 'SLD', shares: 1 });
+    client.emit('commissionReport', { execId: 'ambiguous.close.01', realizedPNL: 99 });
+    assert.strictEqual(closed.length, 1);
+    client.emit('execDetails', -1, contract, { execId: 'exact.close.01', orderId: 5002, orderRef: 'cid-b', acctNumber: 'DU123', side: 'SLD', shares: 1 });
+    client.emit('commissionReport', { execId: 'exact.close.01', realizedPNL: 5 });
+    assert.strictEqual(closed.length, 2);
+    assert.strictEqual(closed[1].ticket, String(secondId));
+    client.emit('execDetails', -1, contract, { execId: 'wrong-account.close.01', orderId: 5003, acctNumber: 'DU999', side: 'SLD', shares: 1 });
+    client.emit('execDetails', -1, contract, { execId: 'wrong-direction.close.01', orderId: 5004, acctNumber: 'DU123', side: 'BOT', shares: 1 });
+    client.emit('execDetails', -1, contract, { execId: 'oversized.close.01', orderId: 5005, acctNumber: 'DU123', side: 'SLD', shares: 2 });
+    assert.strictEqual(closed.length, 2);
+  }
+
+  {
+    const { adapter, client } = makeAdapter({ clientId: 0, trackExternalExecutions: true });
+    ready(adapter, client, 1200);
+    const contract = { conId: 265598, symbol: 'AAPL', secType: 'STK', exchange: 'SMART', currency: 'USD' };
+    client.emit('position', 'DU123', contract, 10, 100);
+    client.emit('positionEnd');
+    const closed = [];
+    adapter.on('position:closed', event => closed.push(event));
+    await adapter.placeOrder({ symbol: 'AAPL', side: 'buy', type: 'market', qty: 1, clientOrderId: 'cid-baseline' });
+    client.emit('orderStatus', 1200, 'Submitted', 0, 1);
+    client.emit('execDetails', -1, contract, { execId: 'baseline.entry.01', orderId: 1200, orderRef: 'cid-baseline', acctNumber: 'DU123', side: 'BOT', shares: 1 });
+    client.emit('execDetails', -1, contract, { execId: 'baseline.close.01', orderId: 6000, acctNumber: 'DU123', side: 'SLD', shares: 1 });
+    client.emit('commissionReport', { execId: 'baseline.close.01', realizedPNL: 2 });
+    assert.strictEqual(closed.length, 0);
+  }
+
+  {
+    const { adapter, client } = makeAdapter({ clientId: 0 });
+    ready(adapter, client, 1300);
+    await new Promise(resolve => setTimeout(resolve, 40));
+    assert.strictEqual(client.positionRequests, 1);
+    assert.strictEqual(client.executionRequests.length, 1);
+    assert.strictEqual(client.executionRequests[0].filter.acctCode, 'DU123');
+    client.emit('connectionClosed');
+    client.emit('nextValidId', 1301);
+    await new Promise(resolve => setTimeout(resolve, 40));
+    assert.strictEqual(client.positionRequests, 2);
+    assert.strictEqual(client.executionRequests.length, 2);
   }
 
   {

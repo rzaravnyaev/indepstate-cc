@@ -14,6 +14,8 @@ const DEFAULTS = Object.freeze({
   defaultTif: 'DAY',
   quoteTimeoutMs: 5000,
   contractResolveTimeoutMs: 5000,
+  commissionReportTimeoutMs: 10000,
+  trackExternalExecutions: true,
   marketDataType: 3,
   defaultTickSize: null,
   snapshotQuotes: false,
@@ -81,6 +83,44 @@ function positiveNumber(value) {
 function finiteNumber(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
+}
+
+function finiteRealizedPnl(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && Math.abs(n) < 1e100 ? n : null;
+}
+
+function executionFamily(execId) {
+  const value = normalizeString(execId);
+  const cut = value.lastIndexOf('.');
+  return cut > 0 ? value.slice(0, cut) : value;
+}
+
+function executionRevision(execId) {
+  const value = normalizeString(execId);
+  const cut = value.lastIndexOf('.');
+  const revision = cut >= 0 ? Number(value.slice(cut + 1)) : 0;
+  return Number.isFinite(revision) ? revision : 0;
+}
+
+function normalizeExecutionSide(side) {
+  const value = normalizeString(side).toUpperCase();
+  if (value === 'BOT' || value === 'BUY') return 'BUY';
+  if (value === 'SLD' || value === 'SELL') return 'SELL';
+  return '';
+}
+
+function contractIdentity(contract = {}) {
+  const conId = Number(contract.conId);
+  if (Number.isInteger(conId) && conId > 0) return `conid:${conId}`;
+  return [contract.symbol, contract.secType, contract.currency, contract.exchange]
+    .map(value => normalizeString(value).toUpperCase())
+    .join('|');
+}
+
+function ibkrExecutionTime(date = new Date()) {
+  const pad = value => String(value).padStart(2, '0');
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
 function safeClone(value) {
@@ -177,6 +217,8 @@ function validateConfig(input = {}) {
   if (!normalizeString(cfg.defaultTif)) errors.push('defaultTif is required');
   if (!Number.isInteger(Number(cfg.quoteTimeoutMs)) || Number(cfg.quoteTimeoutMs) <= 0) errors.push('quoteTimeoutMs must be a positive integer');
   if (!Number.isInteger(Number(cfg.contractResolveTimeoutMs)) || Number(cfg.contractResolveTimeoutMs) <= 0) errors.push('contractResolveTimeoutMs must be a positive integer');
+  if (!Number.isInteger(Number(cfg.commissionReportTimeoutMs)) || Number(cfg.commissionReportTimeoutMs) <= 0) errors.push('commissionReportTimeoutMs must be a positive integer');
+  if (typeof cfg.trackExternalExecutions !== 'boolean') errors.push('trackExternalExecutions must be boolean');
   if (!Number.isInteger(Number(cfg.marketDataType)) || Number(cfg.marketDataType) < 1) errors.push('marketDataType must be a positive integer');
   if (cfg.defaultTickSize != null && cfg.defaultTickSize !== '' && !positiveNumber(cfg.defaultTickSize)) errors.push('defaultTickSize must be a positive number when provided');
   if (typeof cfg.snapshotQuotes !== 'boolean') errors.push('snapshotQuotes must be boolean');
@@ -351,6 +393,7 @@ function buildOrderRequests(order, contract, cfg, allocateId) {
     totalQuantity: quantity,
     tif,
     account: cfg.accountId,
+    orderRef: getClientOrderId(order),
   };
   if (orderType === 'LMT') baseOrder.lmtPrice = Number(order.price ?? order.limitPrice);
 
@@ -369,13 +412,13 @@ function buildOrderRequests(order, contract, cfg, allocateId) {
       orderId: takeProfitId,
       contract,
       role: 'takeProfit',
-      order: { orderId: takeProfitId, action: childAction, orderType: 'LMT', totalQuantity: quantity, lmtPrice: protection.takeProfitPrice, parentId, tif, account: cfg.accountId, transmit: false },
+      order: { orderId: takeProfitId, action: childAction, orderType: 'LMT', totalQuantity: quantity, lmtPrice: protection.takeProfitPrice, parentId, tif, account: cfg.accountId, orderRef: baseOrder.orderRef, transmit: false },
     },
     {
       orderId: stopLossId,
       contract,
       role: 'stopLoss',
-      order: { orderId: stopLossId, action: childAction, orderType: 'STP', totalQuantity: quantity, auxPrice: protection.stopLossPrice, parentId, tif, account: cfg.accountId, transmit: true },
+      order: { orderId: stopLossId, action: childAction, orderType: 'STP', totalQuantity: quantity, auxPrice: protection.stopLossPrice, parentId, tif, account: cfg.accountId, orderRef: baseOrder.orderRef, transmit: true },
     },
   ];
 }
@@ -394,6 +437,10 @@ function loadStoqeyClientFactory() {
       openOrder: EventName.openOrder || 'openOrder',
       orderStatus: EventName.orderStatus || 'orderStatus',
       execDetails: EventName.execDetails || 'execDetails',
+      execDetailsEnd: EventName.execDetailsEnd || 'execDetailsEnd',
+      commissionReport: EventName.commissionReport || 'commissionReport',
+      position: EventName.position || 'position',
+      positionEnd: EventName.positionEnd || 'positionEnd',
       contractDetails: EventName.contractDetails || 'contractDetails',
       contractDetailsEnd: EventName.contractDetailsEnd || 'contractDetailsEnd',
       tickPrice: EventName.tickPrice || 'tickPrice',
@@ -426,6 +473,7 @@ class IBKRAdapter extends ExecutionAdapter {
     this.cfg.defaultTif = normalizeString(this.cfg.defaultTif).toUpperCase();
     this.cfg.quoteTimeoutMs = Number(this.cfg.quoteTimeoutMs);
     this.cfg.contractResolveTimeoutMs = Number(this.cfg.contractResolveTimeoutMs);
+    this.cfg.commissionReportTimeoutMs = Number(this.cfg.commissionReportTimeoutMs);
     this.cfg.marketDataType = Number(this.cfg.marketDataType);
     this.cfg.defaultTickSize = this.cfg.defaultTickSize == null || this.cfg.defaultTickSize === '' ? null : Number(this.cfg.defaultTickSize);
     this.cfg.contractResolution = normalizeContractResolutionConfig(this.cfg.contractResolution);
@@ -441,6 +489,17 @@ class IBKRAdapter extends ExecutionAdapter {
     this.pending = new Map();
     this.cancels = new Map();
     this.orderStatus = new Map();
+    this.logicalPositions = new Map();
+    this.logicalPositionsByCid = new Map();
+    this.orderIdToLogical = new Map();
+    this.executionsByFamily = new Map();
+    this.commissionReportsByExecId = new Map();
+    this.currentPositions = new Map();
+    this.positionsInitialized = false;
+    this.lifecycleStreamsStarted = false;
+    this.sessionExecutionStart = ibkrExecutionTime();
+    this.nextExecutionReqId = Number.isInteger(Number(this.cfg.executionReqIdStart)) ? Number(this.cfg.executionReqIdStart) : 700000000;
+    this.executionReconcileTimer = null;
     this.quoteRequests = new Map();
     this.quoteRequestsBySymbol = new Map();
     this.contractRequests = new Map();
@@ -449,6 +508,10 @@ class IBKRAdapter extends ExecutionAdapter {
     this.nextQuoteWaiterId = 1;
     this.nextContractReqId = Number.isInteger(Number(this.cfg.contractReqIdStart)) ? Number(this.cfg.contractReqIdStart) : 800000000;
     this.logs = [];
+
+    if (this.cfg.trackExternalExecutions && Number(this.cfg.clientId) !== 0) {
+      this.#log('error', 'external execution tracking may be incomplete unless this connection uses TWS Master API client ID 0', { provider: this.provider, clientId: this.cfg.clientId });
+    }
 
     if (this.cfg.enabled && this.cfg.autoConnect !== false) this.connect().catch(err => this.#log('error', 'connect failed', { error: err.message }));
   }
@@ -515,7 +578,11 @@ class IBKRAdapter extends ExecutionAdapter {
     on('managedAccounts', accounts => this.#handleManagedAccounts(accounts));
     on('openOrder', (orderId, contract, order, orderState) => this.#handleOpenOrder(orderId, contract, order, orderState));
     on('orderStatus', (orderId, status, filled, remaining, avgFillPrice, permId, parentId, lastFillPrice, clientId, whyHeld) => this.#handleOrderStatus(orderId, status, { filled, remaining, avgFillPrice, permId, parentId, lastFillPrice, clientId, whyHeld }));
-    on('execDetails', (reqId, contract, execution) => this.#log('info', 'execution details', { provider: this.provider, reqId, orderId: execution?.orderId, symbol: contract?.symbol }));
+    on('execDetails', (reqId, contract, execution) => this.#handleExecDetails(reqId, contract, execution));
+    on('execDetailsEnd', reqId => this.#handleExecDetailsEnd(reqId));
+    on('commissionReport', report => this.#handleCommissionReport(report));
+    on('position', (account, contract, pos, avgCost) => this.#handlePosition(account, contract, pos, avgCost));
+    on('positionEnd', () => this.#handlePositionEnd());
     on('contractDetails', (reqId, details) => this.#handleContractDetails(reqId, details));
     on('contractDetailsEnd', reqId => this.#handleContractDetailsEnd(reqId));
     on('tickPrice', (reqId, tickType, price, attribs) => this.#handleTickPrice(reqId, tickType, price, attribs));
@@ -551,6 +618,7 @@ class IBKRAdapter extends ExecutionAdapter {
     this.connected = true;
     this.nextOrderId = Math.max(id, this.maxObservedOrderId + 1);
     this.#log('info', 'nextValidId received', { provider: this.provider, nextOrderId: this.nextOrderId, maxObservedOrderId: this.maxObservedOrderId });
+    this.#maybeStartLifecycleStreams();
   }
 
   #handleManagedAccounts(accounts) {
@@ -566,6 +634,7 @@ class IBKRAdapter extends ExecutionAdapter {
     }
     this.connected = true;
     this.#log(this.selectedAccount ? 'info' : 'error', 'managed accounts received', { provider: this.provider, selectedAccount: this.selectedAccount || '(none)', accountCount: this.managedAccounts.length });
+    this.#maybeStartLifecycleStreams();
   }
 
   #observeOrderId(orderId) {
@@ -601,9 +670,233 @@ class IBKRAdapter extends ExecutionAdapter {
     }
   }
 
+  #positionKey(account, contract) {
+    return `${normalizeString(account)}|${contractIdentity(contract)}`;
+  }
+
+  #maybeStartLifecycleStreams() {
+    if (!this.connected || !this.selectedAccount || !Number.isInteger(this.nextOrderId) || this.lifecycleStreamsStarted) return;
+    this.lifecycleStreamsStarted = true;
+    if (typeof this.client?.reqPositions === 'function') {
+      try {
+        this.client.reqPositions();
+      } catch (err) {
+        this.#log('error', 'reqPositions failed', { provider: this.provider, reason: err?.message || String(err) });
+      }
+    }
+    this.#scheduleExecutionReconciliation();
+  }
+
+  #scheduleExecutionReconciliation() {
+    if (typeof this.client?.reqExecutions !== 'function' || !this.selectedAccount) return;
+    if (this.executionReconcileTimer) return;
+    this.executionReconcileTimer = setTimeout(() => {
+      this.executionReconcileTimer = null;
+      const reqId = this.nextExecutionReqId++;
+      try {
+        this.client.reqExecutions(reqId, { acctCode: this.selectedAccount, time: this.sessionExecutionStart });
+        this.#log('info', 'execution reconciliation requested', { provider: this.provider, reqId, account: this.selectedAccount });
+      } catch (err) {
+        this.#log('error', 'reqExecutions failed', { provider: this.provider, reqId, reason: err?.message || String(err) });
+      }
+    }, 25);
+    if (typeof this.executionReconcileTimer.unref === 'function') this.executionReconcileTimer.unref();
+  }
+
+  #handleExecDetailsEnd(reqId) {
+    this.#log('info', 'execution reconciliation completed', { provider: this.provider, reqId });
+  }
+
+  #handlePosition(account, contract, pos, avgCost) {
+    if (this.selectedAccount && normalizeString(account) !== this.selectedAccount) return;
+    const key = this.#positionKey(account, contract);
+    const previous = this.currentPositions.get(key);
+    const quantity = finiteNumber(pos) ?? 0;
+    this.currentPositions.set(key, { quantity, avgCost: finiteNumber(avgCost), contract: safeClone(contract), account: normalizeString(account) });
+    if (this.positionsInitialized && previous && previous.quantity !== quantity) {
+      const tracked = Array.from(this.logicalPositions.values()).some(logical => logical.positionKey === key && logical.entryFilled > logical.exitFilled);
+      if (tracked) this.#scheduleExecutionReconciliation();
+    }
+  }
+
+  #handlePositionEnd() {
+    if (!this.positionsInitialized) {
+      this.positionsInitialized = true;
+      for (const logical of this.logicalPositions.values()) {
+        if (logical.baselineKnown || logical.entryFilled > 0) continue;
+        const baselineQty = this.currentPositions.get(logical.positionKey)?.quantity || 0;
+        logical.baselineKnown = true;
+        logical.baselineQty = baselineQty;
+        logical.externalInferenceSafe = Math.abs(baselineQty) < 1e-9;
+      }
+    }
+    this.#scheduleExecutionReconciliation();
+  }
+
+  #remainingQuantity(logical) {
+    return Math.max(0, Number(logical.entryFilled || 0) - Number(logical.exitFilled || 0));
+  }
+
+  #findLogicalForExecution(contract, execution) {
+    const orderId = normalizeString(execution?.orderId);
+    const known = this.orderIdToLogical.get(orderId);
+    if (known) return { ...known, source: 'order-id' };
+
+    const cid = normalizeString(execution?.orderRef);
+    const byCid = cid ? this.logicalPositionsByCid.get(cid) : null;
+    const side = normalizeExecutionSide(execution?.side);
+    if (byCid) {
+      return { logical: byCid, role: side === byCid.entryAction ? 'parent' : 'externalExit', source: 'order-ref' };
+    }
+
+    if (!this.cfg.trackExternalExecutions || !side) return null;
+    const account = normalizeString(execution?.acctNumber);
+    const identity = contractIdentity(contract);
+    const shares = positiveNumber(execution?.shares);
+    if (!shares) return null;
+    const related = Array.from(this.logicalPositions.values()).filter(logical => {
+      const remaining = this.#remainingQuantity(logical);
+      return logical.confirmed
+        && remaining > 1e-9
+        && logical.account === account
+        && logical.contractIdentity === identity
+        && side !== logical.entryAction
+        && shares <= remaining + 1e-9;
+    });
+    const candidates = related.filter(logical => logical.externalInferenceSafe);
+    if (related.length !== 1) {
+      if (related.length) this.#log('info', 'external execution not attributed', { provider: this.provider, execId: execution?.execId, symbol: contract?.symbol, candidates: related.length, reason: 'ambiguous' });
+      return null;
+    }
+    if (candidates.length !== 1) {
+      const potentiallyRelated = Array.from(this.logicalPositions.values()).some(logical => logical.account === account && logical.contractIdentity === identity && this.#remainingQuantity(logical) > 1e-9);
+      if (potentiallyRelated) this.#log('info', 'external execution not attributed', { provider: this.provider, execId: execution?.execId, symbol: contract?.symbol, candidates: candidates.length, reason: candidates.length ? 'ambiguous' : 'no-safe-match' });
+      return null;
+    }
+    this.#log('info', 'external execution attributed to tracked position', { provider: this.provider, execId: execution?.execId, parentOrderId: candidates[0].parentId, symbol: contract?.symbol });
+    return { logical: candidates[0], role: 'externalExit', source: 'inferred' };
+  }
+
+  #reverseExecutionRecord(record) {
+    const logical = record?.logical;
+    if (!logical) return;
+    if (record.kind === 'entry') {
+      logical.entryFilled = Math.max(0, logical.entryFilled - record.appliedShares);
+    } else if (record.kind === 'exit') {
+      logical.exitFilled = Math.max(0, logical.exitFilled - record.appliedShares);
+      logical.closingExecutionFamilies.delete(record.family);
+      logical.pnlByExecutionFamily.delete(record.family);
+    }
+  }
+
+  #handleExecDetails(reqId, contract, execution = {}) {
+    const execId = normalizeString(execution.execId);
+    if (!execId) {
+      this.#log('error', 'execution details missing execId', { provider: this.provider, reqId, orderId: execution.orderId, symbol: contract?.symbol });
+      return;
+    }
+    const family = executionFamily(execId);
+    const existing = this.executionsByFamily.get(family);
+    if (existing?.execId === execId) return;
+    if (existing && executionRevision(execId) < executionRevision(existing.execId)) return;
+    if (existing) this.#reverseExecutionRecord(existing);
+
+    const match = this.#findLogicalForExecution(contract, execution);
+    const shares = positiveNumber(execution.shares);
+    const record = {
+      family,
+      execId,
+      execution: safeClone(execution),
+      contract: safeClone(contract),
+      logical: match?.logical || null,
+      role: match?.role,
+      kind: null,
+      appliedShares: 0,
+    };
+    this.executionsByFamily.set(family, record);
+    this.#log('info', 'execution details', { provider: this.provider, reqId, execId, orderId: execution.orderId, symbol: contract?.symbol, role: match?.role, source: match?.source });
+    if (!match || !shares) return;
+
+    const logical = match.logical;
+    if (match.role === 'parent') {
+      record.kind = 'entry';
+      record.appliedShares = shares;
+      logical.entryFilled += shares;
+      if (logical.confirmed) this.#emitPositionOpened(logical, execution, contract);
+    } else {
+      const remaining = this.#remainingQuantity(logical);
+      if (remaining <= 1e-9) return;
+      record.kind = 'exit';
+      record.appliedShares = Math.min(shares, remaining);
+      logical.exitFilled += record.appliedShares;
+      logical.closingExecutionFamilies.add(family);
+      const report = this.commissionReportsByExecId.get(execId);
+      const profit = finiteRealizedPnl(report?.realizedPNL);
+      if (profit != null) logical.pnlByExecutionFamily.set(family, profit);
+      this.#tryFinalizeLogicalPosition(logical);
+    }
+  }
+
+  #emitPositionOpened(logical, execution, contract) {
+    if (logical.openedEmitted || logical.entryFilled <= 0) return;
+    logical.openedEmitted = true;
+    this.events.emit('position:opened', {
+      ticket: logical.parentId,
+      order: { symbol: contract?.symbol || logical.origOrder?.symbol, size: logical.entryFilled, execution: safeClone(execution), clientOrderId: logical.cid },
+      origOrder: logical.origOrder,
+    });
+  }
+
+  #handleCommissionReport(report = {}) {
+    const execId = normalizeString(report.execId);
+    if (!execId) return;
+    this.commissionReportsByExecId.set(execId, safeClone(report));
+    const family = executionFamily(execId);
+    const record = this.executionsByFamily.get(family);
+    if (!record || record.execId !== execId || record.kind !== 'exit' || !record.logical) return;
+    const profit = finiteRealizedPnl(report.realizedPNL);
+    if (profit == null) record.logical.pnlByExecutionFamily.delete(family);
+    else record.logical.pnlByExecutionFamily.set(family, profit);
+    this.#tryFinalizeLogicalPosition(record.logical);
+  }
+
+  #tryFinalizeLogicalPosition(logical) {
+    if (!logical.confirmed || logical.entryFilled <= 0 || this.#remainingQuantity(logical) > 1e-9) return;
+    const families = Array.from(logical.closingExecutionFamilies);
+    const complete = families.length > 0 && families.every(family => logical.pnlByExecutionFamily.has(family));
+    if (complete) {
+      if (logical.closeTimer) clearTimeout(logical.closeTimer);
+      logical.closeTimer = null;
+      const profit = families.reduce((sum, family) => sum + logical.pnlByExecutionFamily.get(family), 0);
+      if (!logical.reportedEmitted || logical.lastEmittedProfit !== profit) {
+        logical.reportedEmitted = true;
+        logical.lastEmittedProfit = profit;
+        this.events.emit('position:closed', { ticket: logical.parentId, trade: { profit, pnlStatus: 'reported' } });
+      }
+      return;
+    }
+    if (logical.closeTimer) return;
+    logical.closeTimer = setTimeout(() => {
+      logical.closeTimer = null;
+      const nowComplete = Array.from(logical.closingExecutionFamilies).every(family => logical.pnlByExecutionFamily.has(family));
+      if (nowComplete) {
+        this.#tryFinalizeLogicalPosition(logical);
+        return;
+      }
+      if (!logical.unavailableEmitted || logical.reportedEmitted) {
+        logical.unavailableEmitted = true;
+        logical.reportedEmitted = false;
+        logical.lastEmittedProfit = undefined;
+        this.events.emit('position:closed', { ticket: logical.parentId, trade: { pnlStatus: 'unavailable' } });
+      }
+    }, this.cfg.commissionReportTimeoutMs);
+    if (typeof logical.closeTimer.unref === 'function') logical.closeTimer.unref();
+  }
+
   #handleDisconnected(reason) {
     this.connected = false;
     this.nextOrderId = null;
+    this.lifecycleStreamsStarted = false;
     this.#log('error', 'disconnected', { provider: this.provider, reason });
   }
 
@@ -1166,16 +1459,62 @@ class IBKRAdapter extends ExecutionAdapter {
     if (!order.meta) order.meta = {};
     order.meta.cid = cid;
 
+    let logical;
     try {
       const contractRecord = await this.resolveContractRecordForSymbol(order?.symbol);
       const requests = this.buildOrderRequests(order, contractRecord.contract);
-      for (const req of requests) this.pending.set(String(req.orderId), { cid, order, request: safeClone(req), createdAt: Date.now() });
+      const parent = requests.find(req => req.role === 'parent') || requests[0];
+      const positionKey = this.#positionKey(this.selectedAccount, parent.contract);
+      const baselineQty = this.currentPositions.get(positionKey)?.quantity || 0;
+      logical = {
+        cid,
+        parentId: String(parent.orderId),
+        origOrder: order,
+        contract: safeClone(parent.contract),
+        contractIdentity: contractIdentity(parent.contract),
+        positionKey,
+        account: this.selectedAccount,
+        entryAction: normalizeExecutionSide(parent.order.action),
+        requestedQty: positiveNumber(parent.order.totalQuantity) || 0,
+        entryFilled: 0,
+        exitFilled: 0,
+        confirmed: false,
+        openedEmitted: false,
+        rejected: false,
+        baselineKnown: this.positionsInitialized,
+        baselineQty,
+        externalInferenceSafe: this.positionsInitialized && Math.abs(baselineQty) < 1e-9,
+        closingExecutionFamilies: new Set(),
+        pnlByExecutionFamily: new Map(),
+        closeTimer: null,
+        unavailableEmitted: false,
+        reportedEmitted: false,
+        lastEmittedProfit: undefined,
+      };
+      this.logicalPositions.set(logical.parentId, logical);
+      this.logicalPositionsByCid.set(cid, logical);
+      for (const req of requests) {
+        const orderId = String(req.orderId);
+        const link = { logical, role: req.role || (orderId === logical.parentId ? 'parent' : 'child') };
+        this.orderIdToLogical.set(orderId, link);
+        this.pending.set(orderId, { cid, order, request: safeClone(req), role: link.role, logical, createdAt: Date.now() });
+      }
       this.#log('info', 'placing order', { provider: this.provider, symbol: order.symbol, cid, orderIds: requests.map(r => r.orderId), contract: safeContractSummary(requests[0].contract), orderType: requests[0].order.orderType });
       for (const req of requests) {
         this.client.placeOrder(req.orderId, req.contract, req.order);
       }
       return { status: 'ok', provider: this.provider, providerOrderId: `pending:${cid}`, raw: { orderIds: requests.map(r => r.orderId), bracket: requests.length === 3 } };
     } catch (err) {
+      if (logical && !logical.confirmed) {
+        this.logicalPositions.delete(logical.parentId);
+        this.logicalPositionsByCid.delete(logical.cid);
+        for (const [orderId, link] of this.orderIdToLogical.entries()) {
+          if (link.logical === logical) {
+            this.orderIdToLogical.delete(orderId);
+            this.pending.delete(orderId);
+          }
+        }
+      }
       this.#log('error', 'order rejected before send', { provider: this.provider, symbol: order?.symbol, cid, reason: err.message });
       return { status: 'rejected', provider: this.provider, reason: err.message, raw: { context: err.context } };
     }
@@ -1185,13 +1524,28 @@ class IBKRAdapter extends ExecutionAdapter {
     const rec = this.pending.get(orderId);
     if (!rec) return;
     this.pending.delete(orderId);
-    this.events.emit('order:confirmed', { pendingId: rec.cid, ticket: String(ticket), mtOrder: raw, origOrder: rec.order });
+    if (rec.role !== 'parent' || rec.logical.confirmed || rec.logical.rejected) return;
+    rec.logical.confirmed = true;
+    for (const [pendingOrderId, pendingRec] of this.pending.entries()) {
+      if (pendingRec.logical === rec.logical) this.pending.delete(pendingOrderId);
+    }
+    this.events.emit('order:confirmed', { pendingId: rec.cid, ticket: rec.logical.parentId, mtOrder: raw, origOrder: rec.order });
+    this.#emitPositionOpened(rec.logical, null, rec.logical.contract);
+    this.#tryFinalizeLogicalPosition(rec.logical);
   }
 
   #rejectPending(orderId, reason, raw) {
     const rec = this.pending.get(orderId);
     if (!rec) return;
     this.pending.delete(orderId);
+    if (rec.logical.confirmed || rec.logical.rejected) {
+      this.#log('error', 'IBKR attached order rejected after parent confirmation', { provider: this.provider, orderId, role: rec.role, reason });
+      return;
+    }
+    rec.logical.rejected = true;
+    for (const [pendingOrderId, pendingRec] of this.pending.entries()) {
+      if (pendingRec.logical === rec.logical) this.pending.delete(pendingOrderId);
+    }
     this.events.emit('order:rejected', { pendingId: rec.cid, reason, msg: reason, raw, origOrder: rec.order });
   }
 
