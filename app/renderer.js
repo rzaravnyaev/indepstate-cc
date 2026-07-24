@@ -111,10 +111,10 @@ ipcRenderer.invoke('settings:get', 'optionstrat').then((res) => {
 // Equities:  { qty, price, sl, tp, risk, tpTouched }
 const uiState = new Map();
 
-// Per-card execution state (pending/placed/executing/profit/loss)
+// Per-card execution state (pending/placed/executing/closed/profit/loss)
 const cardStates = new Map();
 // Order for sorting cards by execution state
-const cardStateOrder = {pending: 1, 'pending-exec': 2, placed: 3, executing: 4, profit: 5, loss: 6};
+const cardStateOrder = {pending: 1, 'pending-exec': 2, placed: 3, executing: 4, closed: 5, profit: 6, loss: 7};
 
 // Short labels for pending execution orders
 const pendingExecLabels = new Map(); // key -> label
@@ -1565,6 +1565,14 @@ function migrateKey(oldKey, newKey, {preserveUi = false, nextUiPatch = null} = {
     placedOrderByKey.set(newKey, placedOrderByKey.get(oldKey));
     placedOrderByKey.delete(oldKey);
   }
+
+  for (const group of levelOrderGroups.values()) {
+    if (group.key === oldKey) group.key = newKey;
+  }
+
+  for (const [ticket, key] of ticketToKey.entries()) {
+    if (key === oldKey) ticketToKey.set(ticket, newKey);
+  }
 }
 
 // ======= Rendering =======
@@ -2749,6 +2757,7 @@ function ensureLevelOrderGroup(parentRequestId, key, total = null) {
       placedReqIds: new Set(),
       openedTickets: new Set(),
       closedTickets: new Set(),
+      profitByTicket: new Map(),
       tickets: new Set()
     };
     levelOrderGroups.set(parentRequestId, group);
@@ -2824,6 +2833,7 @@ function levelOrderAllPlaced(group) {
 
 function levelOrderAllOpened(group) {
   if (!group) return false;
+  if (group.lifecycleReady === true) return true;
   const total = group.total || group.childReqIds.size;
   return total > 0 && group.openedTickets.size >= total;
 }
@@ -3338,7 +3348,7 @@ ipcRenderer.on('orders:new', (_evt, row) => {
   const oldRow = state.rows[idx];
   const oldKey = rowKey(oldRow);
   const st = cardStates.get(oldKey);
-  if (st === 'profit' || st === 'loss') {
+  if (st === 'closed' || st === 'profit' || st === 'loss') {
     handleClosedCard({row, idx, oldRow, oldKey});
     return;
   }
@@ -3515,9 +3525,17 @@ ipcRenderer.on('position:opened', (_evt, rec) => {
 ipcRenderer.on('level-order:positions-ready', (_evt, rec = {}) => {
   const parentRequestId = rec.parentRequestId || rec.requestId;
   const group = levelOrderGroups.get(parentRequestId);
-  const key = group?.key || pendingByReqId.get(parentRequestId);
+  let key = group?.key || pendingByReqId.get(parentRequestId);
+  if ((!key || !cardByKey(key)) && rec.symbol) {
+    const liveKey = findKeyByTicker(rec.symbol);
+    if (liveKey) {
+      if (group) group.key = liveKey;
+      key = liveKey;
+    }
+  }
   if (!key) return;
   if (group) {
+    group.lifecycleReady = true;
     group.foundQty = Number(rec.foundQty);
     group.expectedQty = Number(rec.expectedQty);
     for (const cid of rec.foundCids || []) levelOrderPendingToGroup.set(String(cid), parentRequestId);
@@ -3531,27 +3549,29 @@ ipcRenderer.on('position:closed', (_evt, rec) => {
   const levelGroup = levelOrderGroups.get(levelOrderTicketToGroup.get(ticket));
   const key = levelGroup?.key || ticketToKey.get(ticket);
   if (!key) return;
-  ticketToKey.delete(ticket);
   if (levelGroup) {
     levelGroup.closedTickets.add(ticket);
+    if (typeof rec.profit === 'number') levelGroup.profitByTicket.set(ticket, rec.profit);
+    else levelGroup.profitByTicket.delete(ticket);
     markRowClosed(key);
     if (levelOrderAllClosed(levelGroup)) {
-      if (typeof rec.profit === 'number') {
-        setCardState(key, rec.profit >= 0 ? 'profit' : 'loss');
-        render();
-      } else {
-        removeRowByKey(key);
-      }
+      const tickets = Array.from(levelGroup.tickets);
+      const pnlComplete = tickets.length > 0 && tickets.every(groupTicket => levelGroup.profitByTicket.has(groupTicket));
+      const totalProfit = pnlComplete
+        ? tickets.reduce((sum, groupTicket) => sum + levelGroup.profitByTicket.get(groupTicket), 0)
+        : null;
+      setCardState(key, pnlComplete ? (totalProfit >= 0 ? 'profit' : 'loss') : 'closed');
+      render();
     }
     return;
   }
   markRowClosed(key);
   if (typeof rec.profit === 'number') {
     setCardState(key, rec.profit >= 0 ? 'profit' : 'loss');
-    render();
   } else {
-    removeRowByKey(key);
+    setCardState(key, 'closed');
   }
+  render();
 });
 
 ipcRenderer.on('order:cancelled', (_evt, rec) => {
@@ -3659,6 +3679,7 @@ if (typeof module !== 'undefined') {
     state,
     pendingByReqId,
     pendingIdByReqId,
+    ticketToKey,
     levelOrderGroups,
     levelOrderChildToGroup,
     levelOrderPendingToGroup,
@@ -3670,6 +3691,7 @@ if (typeof module !== 'undefined') {
     placedOrderByKey,
     instrumentInfo,
     settingsForms,
+    migrateKey,
     setLevelOrderConfig(config) {
       levelOrderCfg = config || {};
     },
