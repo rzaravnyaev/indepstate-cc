@@ -67,9 +67,8 @@ These descriptors are consumed by the in-app Settings panel to render editable f
 
 The `order-cards.json` file lists every source that can feed order cards into the
 application. The file contains a single object with a `sources` array and optional
-settings such as a default stop value in dollars for equity cards, how to treat
-events for cards already in a final state or which action buttons to show on
-each card:
+settings for how to treat events for cards already in a final state and which
+action buttons to show on each card:
 
 ```json
 {
@@ -77,7 +76,6 @@ each card:
     { "type": "webhook" },
     { "type": "file", "pathEnvVar": "ORDER_CARDS_PATH", "pollMs": 1000 }
   ],
-  "defaultEquityStopUsd": 50,
   "closedCardEventStrategy": "ignore",
   "buttons": [
     { "label": "BL",  "action": "BL",  "style": "bl" },
@@ -94,9 +92,14 @@ Each entry in `sources` is an object with a `type` field and additional options
 depending on the type. Multiple sources can be defined and their orders are
 merged together.
 
-If `defaultEquityStopUsd` is present, its numeric value (in dollars) is used as a
-pre-filled Risk $ field for new equity order cards. The
-`DEFAULT_EQUITY_STOP_USD` environment variable (if set) overrides this value.
+Default Risk $ values for regular and level-order cards are configured in
+`order-calculator.json`, including instrument-type defaults and symbol overrides.
+The `DEFAULT_EQUITY_STOP_USD` and `DEFAULT_CX_STOP_USD` environment variables
+override their corresponding instrument-type defaults.
+
+Older overrides containing those risk fields in `order-cards.json` are migrated
+to `order-calculator.json` automatically on startup. Existing new-format values
+are preserved.
 
 `closedCardEventStrategy` determines how the app handles a new order event for a
 ticker whose card is already closed (`take`/`stop`). When set to `"ignore"`

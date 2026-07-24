@@ -61,7 +61,6 @@ function resolveLevelOrderDefaults(config = {}, ticker) {
     ? config.symbols.find(item => String(item?.ticker || '').trim().toUpperCase() === normalizedTicker)
     : null;
   return {
-    riskUsd: finiteNumber(override?.riskUsd, finiteNumber(defaults.riskUsd, null)),
     maxLot: finiteNumber(override?.maxLot, finiteNumber(defaults.maxLot, 0)),
     minLot: normalizeMinLot(finiteNumber(override?.minLot, finiteNumber(defaults.minLot, 1))),
     stopOffsetPts: finiteNumber(override?.stopOffsetPts, finiteNumber(defaults.stopOffsetPts, null)),

@@ -61,11 +61,10 @@ const orderCalculator = {
 
 (function testDefaults() {
   const cfg = {
-    defaults: { riskUsd: 50, maxLot: 0, minLot: 1, stopOffsetPts: 10, takeProfitPts: null, buyPriceSource: 'bid', sellPriceSource: 'bid' },
-    symbols: [{ ticker: 'SPX.cfd', riskUsd: 100, maxLot: 3, minLot: 0.01, stopOffsetPts: 5, takeProfitPts: 30, buyPriceSource: 'mid', sellPriceSource: 'ask' }]
+    defaults: { maxLot: 0, minLot: 1, stopOffsetPts: 10, takeProfitPts: null, buyPriceSource: 'bid', sellPriceSource: 'bid' },
+    symbols: [{ ticker: 'SPX.cfd', maxLot: 3, minLot: 0.01, stopOffsetPts: 5, takeProfitPts: 30, buyPriceSource: 'mid', sellPriceSource: 'ask' }]
   };
   assert.deepStrictEqual(resolveLevelOrderDefaults(cfg, 'SPX.cfd'), {
-    riskUsd: 100,
     maxLot: 3,
     minLot: 0.01,
     stopOffsetPts: 5,
@@ -74,7 +73,6 @@ const orderCalculator = {
     sellPriceSource: 'ask'
   });
   assert.deepStrictEqual(resolveLevelOrderDefaults(cfg, 'AAPL'), {
-    riskUsd: 50,
     maxLot: 0,
     minLot: 1,
     stopOffsetPts: 10,
@@ -86,7 +84,6 @@ const orderCalculator = {
     defaults: { buyPriceSource: 'bad', sellPriceSource: '' },
     symbols: [{ ticker: 'BAD', buyPriceSource: 'nope', sellPriceSource: 'MID' }]
   }, 'BAD'), {
-    riskUsd: null,
     maxLot: 0,
     minLot: 1,
     stopOffsetPts: null,

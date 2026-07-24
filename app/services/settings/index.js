@@ -9,7 +9,7 @@ const restartRequired = new Map();
 const APPLY_POLICIES = {
   ui: { livePaths: ['*'] },
   'order-cards': {
-    livePaths: ['defaultEquityStopUsd', 'defaultCxStopUsd', 'closedCardEventStrategy', 'showBidAsk', 'showSpread', 'buttonRows', 'buttons', 'instrumentRefreshMs'],
+    livePaths: ['closedCardEventStrategy', 'showBidAsk', 'showSpread', 'buttonRows', 'buttons', 'instrumentRefreshMs'],
     restartPaths: ['sources']
   },
   'level-order': { livePaths: ['*'] },

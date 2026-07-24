@@ -1,6 +1,5 @@
 {
   "defaults": {
-    "riskUsd": 50,
     "maxLot": 0,
     "minLot": 1,
     "stopOffsetPts": 10,

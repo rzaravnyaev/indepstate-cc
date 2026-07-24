@@ -5,10 +5,6 @@
   "options": {
     "defaults": {
       "description": "Default level order values",
-      "riskUsd": {
-        "type": "number",
-        "description": "Default risk in USD"
-      },
       "maxLot": {
         "type": "number",
         "description": "Default max lot per child order; 0 disables splitting"
@@ -43,10 +39,6 @@
         "ticker": {
           "type": "string",
           "description": "Ticker"
-        },
-        "riskUsd": {
-          "type": "number",
-          "description": "Risk in USD"
         },
         "maxLot": {
           "type": "number",
